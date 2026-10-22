@@ -31,4 +31,15 @@ describe("monitor writes", () => {
     expect(result).toBe("sent");
     expect(send).toHaveBeenCalledOnce();
   });
+
+  it("异步取消确认时不发请求", async () => {
+    const send = vi.fn(async () => "sent");
+    const result = await performMonitorWrite({
+      confirm: async () => false,
+      action: "pause",
+      send,
+    });
+    expect(result).toBe("cancelled");
+    expect(send).not.toHaveBeenCalled();
+  });
 });
