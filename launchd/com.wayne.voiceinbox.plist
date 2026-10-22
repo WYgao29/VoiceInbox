@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  安装前先看项目 README 的「安装与使用」和「开启后台监控」。
+  直接执行项目专用的 Python 副本 bin/voiceinbox-python，不经过 bash，
+  也不使用 Homebrew 的公用 python3.14。.venv/bin/python 是软链接，不要授权它。
+  副本由 scripts/build_launcher.sh 生成，不进 git。
+  @VOICEINBOX_ROOT@ 和以 ~ 开头的路径，在安装时展开成仓库根目录和当前用户主目录。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wayne.voiceinbox</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@VOICEINBOX_ROOT@/bin/voiceinbox-python</string>
+    <string>-m</string>
+    <string>voiceinbox</string>
+    <string>run-once</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>@VOICEINBOX_ROOT@</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>~</string>
+    <key>TZ</key>
+    <string>Asia/Shanghai</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HF_HUB_OFFLINE</key>
+    <string>1</string>
+    <key>NO_PROXY</key>
+    <string>127.0.0.1,localhost</string>
+    <key>VOICEINBOX_CONFIG</key>
+    <string>@VOICEINBOX_ROOT@/config.toml</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <key>WatchPaths</key>
+  <array>
+    <string>~/Library/Group Containers/group.com.apple.VoiceMemos.shared</string>
+    <string>~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings</string>
+    <string>~/VoiceInbox/inbox</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>~/VoiceInbox/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>~/VoiceInbox/logs/launchd.err.log</string>
+</dict>
+</plist>

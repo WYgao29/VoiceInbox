@@ -1,0 +1,35 @@
+{
+  "name": "voiceinbox",
+  "productName": "VoiceInbox",
+  "private": true,
+  "version": "0.1.0",
+  "description": "VoiceInbox 桌面应用",
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:desktop": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
+    "build:electron": "tsc -p tsconfig.electron.json && node scripts/preload.cjs",
+    "build": "tsc -p tsconfig.json && vite build && npm run build:electron",
+    "start": "electron .",
+    "test": "vitest run",
+    "icons": "bash scripts/make-icon.sh",
+    "package:mac": "npm run icons && npm run build && electron-packager . VoiceInbox --platform=darwin --arch=arm64 --out=release --overwrite --no-asar --no-prune --icon=build/icon.icns --app-bundle-id=com.wayne.voiceinbox.desktop --ignore='^/(\\.venv|\\.git|release|tests|src|electron|scripts|testdata|voiceinbox|launchd|bin|node_modules|__pycache__|\\.pytest_cache|config\\.toml|build)'"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@electron/packager": "latest",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "concurrently": "^9.2.0",
+    "electron": "44.7.2",
+    "typescript": "^5.9.3",
+    "vite": "8.3.4",
+    "vitest": "^3.2.4",
+    "wait-on": "^8.0.0"
+  }
+}

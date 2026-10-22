@@ -1,0 +1,14 @@
+[project]
+name = "voiceinbox"
+version = "0.1.0"
+description = "iPhone 语音备忘录同步到 Mac 后，用本机 Qwen3-ASR 转成纯文本"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "e2e: 调用本机 Qwen3-ASR 的真实转写，峰值内存约 9.6GB，不要并行",
+]

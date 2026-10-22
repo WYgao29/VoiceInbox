@@ -1,0 +1,73 @@
+# 语音备忘录 → Qwen3-ASR 纯文本。路径里的 ~ 会展开。
+# 复制本文件为 config.toml 后再改。config.toml 不进 git。
+# 环境变量可覆盖：VOICEINBOX_ROOT / VOICEINBOX_INBOX / VOICEINBOX_VOICE_MEMOS
+# VOICEINBOX_SINCE / VOICEINBOX_ASR_SCRIPT / VOICEINBOX_ASR_LANG
+
+[paths]
+# 扫整个 group 容器，而不是写死 Recordings。列出目录需要完全磁盘访问。
+voice_memos_dir = "~/Library/Group Containers/group.com.apple.VoiceMemos.shared"
+inbox_dir = "~/VoiceInbox/inbox"
+root_dir = "~/VoiceInbox"
+
+[asr]
+# 只调用，不修改 ~/asr。transcribe.sh 会再转一次 16kHz。
+script = "~/asr/qwen3-asr/transcribe.sh"
+model = "mlx-community/Qwen3-ASR-1.7B-bf16"
+# 对比测试用的是 Chinese。留空字符串则不传 ASR_LANG，由模型自己判断。
+language = "Chinese"
+
+[pipeline]
+# 文件修改时间距今至少这么多秒，且隔几秒大小不变，才认为 iCloud 下完了。
+stable_wait_s = 60
+stable_recheck_s = 3
+# 第 1 次失败等 5 分钟，第 2 次等 10 分钟，第 3 次放入 failed/。
+max_attempts = 3
+retry_base_s = 300
+min_duration_s = 3
+# 只过滤语音备忘录。inbox 里手动放进来的文件不受这个日期限制。含当天。
+since = "2026-10-01"
+keep_audio_copy = true
+timezone = "Asia/Shanghai"
+# 避免一次把全部历史录音送进 Qwen（峰值内存约 9.6GB，同时只允许一个）。
+max_per_run = 10
+# 语音备忘录没有数据库日期、文件名里也没有日期时：mtime 用修改时间，skip 先跳过。
+undated_policy = "mtime"
+# 真要弹 macOS 通知再改成 true。默认只写日志，避免反复打扰。
+notify_on_fda_block = false
+# 短于这么多秒的录音算「闪念」：只润色成一小段，追加到当天的每日笔记。更长的走完整总结。
+flash_max_s = 120
+
+[llm]
+# 本机 oMLX（OpenAI 兼容）。只连 127.0.0.1，不用任何云服务。
+enabled = true
+base_url = "http://127.0.0.1:8000/v1"
+model = "Qwen3.6-35B-A3B-4bit"
+# API key 不写在这里：先看环境变量 OMLX_API_KEY，再只读 oMLX 自己的设置文件。
+settings_file = "~/.omlx/settings.json"
+# 服务没开时用它 start（会打开 oMLX.app 的托管服务）。
+cli = "~/.omlx/bin/omlx"
+auto_start = true
+timeout_s = 900
+# 这一轮自己加载的模型，用完就请 oMLX 卸掉，别和 Qwen3-ASR 叠在一起。
+unload_after = true
+# 超过这么多字先分段提炼再合并。
+chunk_chars = 20000
+
+[obsidian]
+enabled = true
+# 改成你自己的 Obsidian 库目录（库根下要有 .obsidian）。
+vault = "~/Documents/Obsidian/YourVault"
+# 只写进这个子目录：<库>/语音备忘录/YYYY/MM/ 和 <库>/语音备忘录/每日/
+folder = "语音备忘录"
+
+[digest]
+# 每天这个时间之后的那一轮生成「当日摘要」；跨天时补前一天（只在内容变了时）。
+enabled = true
+time = "22:30"
+
+[monitor]
+# 后台监控（launchd 任务 com.wayne.voiceinbox）。应用「设置」和 scripts/install_launchd.sh 都按这里来。
+# enabled = false 时不装载任务；interval_min 是兜底定时（分钟）；watch 是有新录音时立即处理（WatchPaths）。
+enabled = false
+interval_min = 5
+watch = false
