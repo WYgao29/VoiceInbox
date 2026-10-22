@@ -17,6 +17,7 @@ export function Sidebar() {
     : "后端连接中";
   return (
     <aside className="sidebar">
+      <div className="titlebar-drag" aria-hidden="true" />
       <div className="brand-row">
         <img className="brand-mark is-light" src="/brand/voiceinbox-mark.svg" width="22" height="22" alt="" />
         <img className="brand-mark is-dark" src="/brand/voiceinbox-mark-dark.svg" width="22" height="22" alt="" />
