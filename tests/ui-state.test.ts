@@ -13,6 +13,8 @@ import {
   retranscribeConfirm,
   runIfConfirmed,
   statusTone,
+  todayEmptyCopy,
+  todoSaveError,
 } from "../src/ui-state.js";
 
 describe("recordings empty state", () => {
@@ -46,6 +48,28 @@ describe("recordings empty state", () => {
     expect(html).toContain("没有匹配的录音");
     expect(html).toContain("换一个关键词");
     expect(html).toContain("清空搜索");
+  });
+});
+
+describe("today empty state", () => {
+  it("这天没有录音时给出导入", () => {
+    const copy = todayEmptyCopy();
+    expect(copy.title).toBe("这天没有录音");
+    expect(copy.action).toBe("导入音频");
+    expect(copy.icon).toBe("mic");
+    const html = renderToStaticMarkup(createElement(EmptyState, { copy, onAction: () => undefined }));
+    expect(html).toContain("empty-state");
+    expect(html).toContain("这天没有录音");
+    expect(html).toContain("导入音频");
+    expect(html).not.toContain("window.alert");
+  });
+});
+
+describe("todo save errors", () => {
+  it("失败说明进提示，空错误用没有记下", () => {
+    expect(todoSaveError(new Error("网络断了"))).toBe("网络断了");
+    expect(todoSaveError(new Error(""))).toBe("没有记下");
+    expect(todoSaveError("x")).toBe("没有记下");
   });
 });
 
@@ -84,18 +108,28 @@ describe("confirm gate", () => {
     expect(importConfirm().message).toContain("9.6GB");
   });
 
-  it("对话框标出危险按钮", () => {
-    const html = renderToStaticMarkup(
+  it("对话框标出危险按钮，并且默认聚焦取消", () => {
+    const danger = renderToStaticMarkup(
       createElement(ConfirmDialogView, {
         request: deleteRuleConfirm("甲", "乙"),
         onCancel: () => undefined,
         onConfirm: () => undefined,
       }),
     );
-    expect(html).toContain('class="danger"');
-    expect(html).toContain("删掉「甲 → 乙」？");
-    expect(html).toContain("取消");
-    expect(html).not.toContain("window.confirm");
+    const plain = renderToStaticMarkup(
+      createElement(ConfirmDialogView, {
+        request: importConfirm(),
+        onCancel: () => undefined,
+        onConfirm: () => undefined,
+      }),
+    );
+    expect(danger).toContain('class="danger"');
+    expect(danger).toContain("删掉「甲 → 乙」？");
+    expect(danger).not.toContain("window.confirm");
+    for (const html of [danger, plain]) {
+      expect(html).toMatch(/<button[^>]*autofocus[^>]*>取消<\/button>/);
+      expect(html).not.toMatch(/<button[^>]*autofocus[^>]*>(继续|删除)<\/button>/);
+    }
   });
 });
 

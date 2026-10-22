@@ -36,6 +36,7 @@ function Shell() {
   const inboxRef = useRef(inbox);
   inboxRef.current = inbox;
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const infoButton = useRef<HTMLButtonElement | null>(null);
   const menuRoot = useRef<HTMLDivElement | null>(null);
   const dragDepth = useRef(0);
   const [menu, setMenu] = useState(false);
@@ -178,7 +179,7 @@ function Shell() {
             <span className="dot" />
             <span className="pill-text">{monitorText}</span>
           </button>
-          <button type="button" className="secondary panel-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen((open) => !open)}>
+          <button ref={infoButton} type="button" className="secondary panel-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen((open) => !open)}>
             信息
           </button>
           <button type="button" className="primary" onClick={() => fileRef.current?.click()}>
@@ -252,7 +253,7 @@ function Shell() {
       {panelOpen && narrow ? (
         <button type="button" className="panel-scrim" aria-label="关闭信息栏" onClick={closePanel} />
       ) : null}
-      <InfoPanel drawer={panelOpen && narrow} onClose={closePanel} />
+      <InfoPanel layout={narrow ? "drawer" : "dock"} open={panelOpen} onClose={closePanel} returnFocus={infoButton} />
       {state.notice ? (
         <p className="toast" role="status">
           {state.notice}

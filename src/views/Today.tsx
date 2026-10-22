@@ -1,6 +1,8 @@
 import { openObsidian } from "../api";
 import { MarkdownView } from "../components";
+import { EmptyState } from "../empty-state";
 import { useInbox, type TodayData } from "../inbox";
+import { todayEmptyCopy } from "../ui-state";
 import { recordingTitle, timeOnly, weekdayLabel } from "../../shared/text.js";
 
 function dayChoices(today: TodayData): { date: string; count: number }[] {
@@ -48,33 +50,31 @@ export function Today() {
           </button>
         </div>
       </div>
-      <article className="panel">
-        <div className="panel-head">
-          <h3>摘要</h3>
-          <div className="bulk">
-            {digest?.uri ? (
-              <button type="button" className="secondary" onClick={() => openObsidian(digest.uri || "")}>
-                在 Obsidian 打开
-              </button>
-            ) : null}
-            {today.digest_ready && items.length ? (
-              <button type="button" className="primary" disabled={inbox.state.busy} onClick={() => void inbox.digest(today.date)}>
-                {digest?.md ? "重新生成" : "生成摘要"}
-              </button>
-            ) : null}
+      {digest?.md || items.length ? (
+        <article className="panel">
+          <div className="panel-head">
+            <h3>摘要</h3>
+            <div className="bulk">
+              {digest?.uri ? (
+                <button type="button" className="secondary" onClick={() => openObsidian(digest.uri || "")}>
+                  在 Obsidian 打开
+                </button>
+              ) : null}
+              {today.digest_ready && items.length ? (
+                <button type="button" className="primary" disabled={inbox.state.busy} onClick={() => void inbox.digest(today.date)}>
+                  {digest?.md ? "重新生成" : "生成摘要"}
+                </button>
+              ) : null}
+            </div>
           </div>
-        </div>
-        {digest?.md ? (
-          <MarkdownView text={md} skip={["待办", "当天的录音"]} />
-        ) : (
-          <p className="empty">
-            {items.length
-              ? `这天还没有当日摘要。每天 ${today.digest_time || ""} 之后会自动生成，也可以现在生成。`
-              : "这天没有录音。"}
-          </p>
-        )}
-        {digest?.md ? <p className="foot">更新于 {digest.updated} · {digest.path}</p> : null}
-      </article>
+          {digest?.md ? (
+            <MarkdownView text={md} skip={["待办", "当天的录音"]} />
+          ) : (
+            <p className="empty">{`这天还没有当日摘要。每天 ${today.digest_time || ""} 之后会自动生成，也可以现在生成。`}</p>
+          )}
+          {digest?.md ? <p className="foot">更新于 {digest.updated} · {digest.path}</p> : null}
+        </article>
+      ) : null}
       <section className="panel">
         <div className="panel-head">
           <h3>这天的录音 · {items.length} 条</h3>
@@ -94,7 +94,7 @@ export function Today() {
             ))}
           </div>
         ) : (
-          <p className="empty">这天没有录音。</p>
+          <EmptyState copy={todayEmptyCopy()} onAction={() => window.dispatchEvent(new Event("voiceinbox-import"))} />
         )}
       </section>
     </div>

@@ -15,6 +15,10 @@ export function ConfirmDialogView({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, [request]);
   return (
     <div className="scrim" onClick={onCancel}>
       <div
@@ -27,10 +31,10 @@ export function ConfirmDialogView({
         <h2 id="confirm-title">{request.title}</h2>
         <p className="dialog-description">{request.message}</p>
         <div className="dialog-actions">
-          <button type="button" className="secondary" autoFocus={Boolean(request.danger)} onClick={onCancel}>
+          <button type="button" className="secondary" autoFocus ref={cancelRef} onClick={onCancel}>
             {request.cancelLabel || "取消"}
           </button>
-          <button type="button" className={request.danger ? "danger" : "primary"} autoFocus={!request.danger} onClick={onConfirm}>
+          <button type="button" className={request.danger ? "danger" : "primary"} onClick={onConfirm}>
             {request.confirmLabel}
           </button>
         </div>

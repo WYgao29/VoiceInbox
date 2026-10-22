@@ -14,7 +14,7 @@
     "start": "electron .",
     "test": "vitest run",
     "icons": "bash scripts/make-icon.sh",
-    "package:mac": "npm run icons && npm run build && electron-packager . VoiceInbox --platform=darwin --arch=arm64 --out=release --overwrite --no-asar --no-prune --icon=build/icon.icns --app-bundle-id=com.wayne.voiceinbox.desktop --ignore='^/(\\.venv|\\.git|release|tests|src|electron|scripts|testdata|voiceinbox|launchd|bin|node_modules|__pycache__|\\.pytest_cache|config\\.toml|build)'"
+    "package:mac": "npm run icons && npm run build && node scripts/package-mac.mjs"
   },
   "dependencies": {
     "react": "19.3.1",

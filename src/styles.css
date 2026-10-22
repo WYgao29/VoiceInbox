@@ -394,6 +394,11 @@ button.secondary {
   color: var(--text);
 }
 button.secondary:hover { background: var(--surface-hover); }
+button.panel-close {
+  align-items: center;
+  justify-content: center;
+  line-height: 30px;
+}
 .text-button {
   border: 0;
   background: transparent;
@@ -963,7 +968,7 @@ textarea { width: 100%; min-height: 120px; padding: 8px; resize: vertical; }
     box-shadow: var(--shadow-overlay);
   }
   .app-shell.is-panel-open .info-pane { transform: none; }
-  .panel-toggle, .panel-close { display: inline-flex; }
+  .panel-toggle, .panel-close { display: inline-flex; align-items: center; justify-content: center; }
   .two { grid-template-columns: 1fr; }
   .workspace, .skeleton-screen { grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); }
 }

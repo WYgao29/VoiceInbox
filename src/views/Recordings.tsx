@@ -21,9 +21,7 @@ function TodoList({ items, id, rules, query }: { items: Todo[]; id: string; rule
               type="checkbox"
               checked={Boolean(todo.done)}
               onChange={(event) => {
-                void inbox.toggleTodo(id, todo.key, event.target.checked).catch((error: unknown) => {
-                  window.alert(error instanceof Error ? error.message : "没有记下");
-                });
+                void inbox.toggleTodo(id, todo.key, event.target.checked);
               }}
             />
             <span>

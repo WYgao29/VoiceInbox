@@ -16,6 +16,7 @@ import {
   retryOneConfirm,
   runIfConfirmed,
   summarizeConfirm,
+  todoSaveError,
 } from "./ui-state";
 
 export interface TodayTodo {
@@ -477,28 +478,32 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       if (id) void select(id).catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     toggleTodo: async (id, key, done) => {
-      await api("/api/todos", { method: "POST", json: { id, key, done } });
-      commit((current) => ({
-        ...current,
-        detail:
-          current.detail?.id === id && current.detail.analysis
+      try {
+        await api("/api/todos", { method: "POST", json: { id, key, done } });
+        commit((current) => ({
+          ...current,
+          detail:
+            current.detail?.id === id && current.detail.analysis
+              ? {
+                  ...current.detail,
+                  analysis: {
+                    ...current.detail.analysis,
+                    todos: (current.detail.analysis.todos || []).map((todo) => (todo.key === key ? { ...todo, done } : todo)),
+                  },
+                  todo_open: (current.detail.analysis.todos || []).filter((todo) => (todo.key === key ? !done : !todo.done)).length,
+                }
+              : current.detail,
+          today: current.today
             ? {
-                ...current.detail,
-                analysis: {
-                  ...current.detail.analysis,
-                  todos: (current.detail.analysis.todos || []).map((todo) => (todo.key === key ? { ...todo, done } : todo)),
-                },
-                todo_open: (current.detail.analysis.todos || []).filter((todo) => (todo.key === key ? !done : !todo.done)).length,
+                ...current.today,
+                todos: (current.today.todos || []).map((todo) => (todo.id === id && todo.key === key ? { ...todo, done } : todo)),
               }
-            : current.detail,
-        today: current.today
-          ? {
-              ...current.today,
-              todos: (current.today.todos || []).map((todo) => (todo.id === id && todo.key === key ? { ...todo, done } : todo)),
-            }
-          : current.today,
-      }));
-      void loadList().catch(() => undefined);
+            : current.today,
+        }));
+        void loadList().catch(() => undefined);
+      } catch (error: unknown) {
+        notify(todoSaveError(error));
+      }
     },
     setDay: (day) => {
       commit((current) => ({ ...current, day }));

@@ -1,7 +1,7 @@
-import { useRef } from "react";
+import type { RefObject } from "react";
 import { openObsidian } from "../api";
 import { RichText } from "../components";
-import { useDismissable } from "../dismissable";
+import { InfoDrawerShell } from "../info-drawer";
 import { useInbox, type TodayTodo } from "../inbox";
 import { recordingTitle, shortWhen } from "../../shared/text.js";
 
@@ -83,9 +83,7 @@ function TodayInfo() {
                       type="checkbox"
                       checked={Boolean(todo.done)}
                       onChange={(event) => {
-                        void inbox.toggleTodo(id, todo.key, event.target.checked).catch((error: unknown) => {
-                          window.alert(error instanceof Error ? error.message : "没有记下");
-                        });
+                        void inbox.toggleTodo(id, todo.key, event.target.checked);
                       }}
                     />
                     <span>
@@ -137,25 +135,31 @@ function SettingsInfo() {
   );
 }
 
-export function InfoPanel({ drawer, onClose }: { drawer: boolean; onClose: () => void }) {
+export function InfoPanel({
+  layout,
+  open,
+  onClose,
+  returnFocus,
+}: {
+  layout: "dock" | "drawer";
+  open: boolean;
+  onClose: () => void;
+  returnFocus: RefObject<HTMLElement | null>;
+}) {
   const inbox = useInbox();
-  const root = useRef<HTMLElement | null>(null);
-  useDismissable(drawer, onClose, root);
   const title = inbox.state.view === "recordings" ? recordingTitle(inbox.state.detail) : "";
   return (
-    <aside className="info-pane" aria-label="信息" ref={root}>
-      <div className="col-head">
-        <h2>{inbox.state.view === "recordings" ? title || "信息" : "信息"}</h2>
-        <button type="button" className="secondary panel-close" onClick={onClose}>
-          关闭
-        </button>
-      </div>
-      <div className="info-body">
-        {inbox.state.view === "today" ? <TodayInfo /> : null}
-        {inbox.state.view === "recordings" ? <RecordingInfo /> : null}
-        {inbox.state.view === "vocab" ? <VocabInfo /> : null}
-        {inbox.state.view === "settings" ? <SettingsInfo /> : null}
-      </div>
-    </aside>
+    <InfoDrawerShell
+      layout={layout}
+      open={open}
+      onClose={onClose}
+      returnFocus={returnFocus}
+      title={inbox.state.view === "recordings" ? title || "信息" : "信息"}
+    >
+      {inbox.state.view === "today" ? <TodayInfo /> : null}
+      {inbox.state.view === "recordings" ? <RecordingInfo /> : null}
+      {inbox.state.view === "vocab" ? <VocabInfo /> : null}
+      {inbox.state.view === "settings" ? <SettingsInfo /> : null}
+    </InfoDrawerShell>
   );
 }

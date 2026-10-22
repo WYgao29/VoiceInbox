@@ -54,6 +54,19 @@ export function recordingsEmptyKind(input: EmptyQuery): EmptyKind {
   return "filter";
 }
 
+export function todayEmptyCopy(): EmptyCopy {
+  return {
+    icon: "mic",
+    title: "这天没有录音",
+    hint: "导入一条音频，或等后台监控发现新的语音备忘录。",
+    action: "导入音频",
+  };
+}
+
+export function todoSaveError(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : "没有记下";
+}
+
 export function recordingsEmptyCopy(kind: EmptyKind): EmptyCopy {
   if (kind === "search") {
     return {
