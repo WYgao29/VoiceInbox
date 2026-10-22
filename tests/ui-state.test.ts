@@ -23,7 +23,10 @@ describe("recordings empty state", () => {
     expect(recordingsEmptyKind({ ...base, status: "failed", total: 4 })).toBe("filter");
     expect(recordingsEmptyKind({ ...base, tag: "日常", total: 4 })).toBe("filter");
     expect(recordingsEmptyKind(base)).toBe("none");
+    expect(recordingsEmptyKind({ ...base, status: "all", total: 0 })).toBe("none");
+    expect(recordingsEmptyKind({ ...base, status: "failed", total: 0 })).toBe("none");
     expect(recordingsEmptyKind({ ...base, status: "done", total: 3 })).toBe("filter");
+    expect(recordingsEmptyKind({ ...base, status: "all", total: 3 })).toBe("filter");
 
     const search = recordingsEmptyCopy("search");
     const filter = recordingsEmptyCopy("filter");

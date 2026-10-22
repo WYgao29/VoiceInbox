@@ -703,15 +703,16 @@ export function InboxProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     applyTheme(stateRef.current.theme);
     let gone = false;
+    let shotsOwn = false;
     void (async () => {
       try {
         const [backend] = await Promise.all([desktopBackend(), loadList(), loadRules(), loadFeatures(), loadActivity(), loadMonitor()]);
-        if (gone) return;
+        if (gone || shotsOwn) return;
         commit((current) => ({ ...current, ready: true, backend }));
         const dest = destinationFromHash(initialHash.current);
         if (dest?.kind === "view") setView(dest.view);
         else if (dest?.kind === "recording") await select(dest.id);
-        else if (stateRef.current.items[0]) await select(stateRef.current.items[0].id);
+        else if (!shotsOwn && stateRef.current.items[0]) await select(stateRef.current.items[0].id);
       } catch (error) {
         if (!gone) {
           commit((current) => ({ ...current, ready: true }));
@@ -737,6 +738,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
         .catch(() => undefined);
     }, 8000);
     window.__voiceinboxShot = async (spec) => {
+      shotsOwn = true;
       try {
         dismissConfirm();
         const theme: ThemeChoice = spec.theme === "dark" || spec.theme === "light" ? spec.theme : "system";
@@ -751,18 +753,34 @@ export function InboxProvider({ children }: { children: ReactNode }) {
           dropOver: false,
           view,
           query: spec.empty ? "zzzz-no-match-shot" : "",
-          status: spec.empty ? "all" : current.status,
-          kind: spec.empty ? "" : current.kind,
-          scene: spec.empty ? "" : current.scene,
-          tag: spec.empty ? "" : current.tag,
-          from: spec.empty ? "" : current.from,
-          to: spec.empty ? "" : current.to,
+          status: spec.empty ? "all" : "done",
+          kind: "",
+          scene: "",
+          tag: "",
+          from: "",
+          to: "",
+          selectedId: spec.empty ? "" : current.selectedId,
+          detail: spec.empty ? null : current.detail,
         }));
         if (view === "recordings") {
           await loadList();
-          if (!spec.empty) {
-            const id = stateRef.current.selectedId || stateRef.current.items[0]?.id;
-            if (id) await select(id, { keep: stateRef.current.detail?.id === id });
+          if (spec.empty) {
+            commit((current) => ({
+              ...current,
+              query: "zzzz-no-match-shot",
+              status: "all",
+              kind: "",
+              scene: "",
+              tag: "",
+              from: "",
+              to: "",
+              selectedId: "",
+              detail: null,
+            }));
+          } else {
+            const id = stateRef.current.items[0]?.id;
+            if (id) await select(id, { keep: false });
+            else commit((current) => ({ ...current, selectedId: "", detail: null }));
             const tab = spec.tab;
             if (tab === "summary" || tab === "todos" || tab === "mind" || tab === "text") {
               commit((current) => ({ ...current, tab }));

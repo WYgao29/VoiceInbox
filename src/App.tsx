@@ -8,6 +8,7 @@ import { InboxProvider, useInbox } from "./inbox";
 import { applyPlaybackRate } from "./playback";
 import { Sidebar } from "./Sidebar";
 import { LoadingSkeleton } from "./skeleton";
+import { MoreIcon } from "./icons";
 import { InfoPanel } from "./views/InfoPanel";
 import { Recordings } from "./views/Recordings";
 import { Settings } from "./views/Settings";
@@ -195,8 +196,8 @@ function Shell() {
             }}
           />
           <div className="menu" ref={menuRoot}>
-            <button type="button" className="secondary" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu((open) => !open)}>
-              ⋯
+            <button type="button" className="secondary icon-button" aria-label="更多" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu((open) => !open)}>
+              <MoreIcon />
             </button>
             {menu ? (
               <div className="menu-pop" role="menu">

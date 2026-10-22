@@ -365,6 +365,14 @@ button.primary, button.secondary, button.danger, .text-button {
   transition: var(--transition-control);
 }
 button.primary, button.secondary, button.danger { white-space: nowrap; }
+button.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+}
+button.icon-button svg { width: 16px; height: 16px; }
 button.primary {
   border: 0;
   background: var(--accent);
@@ -397,6 +405,11 @@ button.secondary:hover { background: var(--surface-hover); }
 .text-button.danger:hover { color: var(--danger); }
 button:active { transform: scale(0.97); }
 .python-banner {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
   margin: 0;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
@@ -406,9 +419,34 @@ button:active { transform: scale(0.97); }
   font-family: var(--font-mono);
   font-size: var(--fs-12);
   line-height: 18px;
-  white-space: nowrap;
+}
+.python-banner-label, .python-banner-note {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.python-banner-label { flex: 0 0 auto; font-family: var(--font-ui); }
+.path-inline {
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  min-width: 8em;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.path-line {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  margin: 4px 0 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  line-height: 18px;
 }
 .pill {
   display: inline-flex;
@@ -505,7 +543,8 @@ button:active { transform: scale(0.97); }
   align-items: center;
   gap: 8px;
 }
-.dates { color: var(--text-3); font-size: var(--fs-13); }
+.dates { flex-wrap: wrap; color: var(--text-3); font-size: var(--fs-13); }
+.dates > span:first-child { flex: 0 0 auto; white-space: nowrap; }
 .dates input, .custom-row input, .field input, .field select, .field textarea, .fix-row input {
   height: 32px;
   padding: 0 8px;
@@ -588,7 +627,7 @@ button:active { transform: scale(0.97); }
 .todo-chip { color: var(--accent-text); }
 .keys-hint { padding: 8px 16px 16px; color: var(--text-3); font-size: var(--fs-12); }
 .empty { padding: 24px 8px; color: var(--text-3); text-align: center; }
-.empty.big { padding: 64px 24px; }
+.empty.big { max-width: 28em; margin-inline: auto; padding: 64px 24px; text-wrap: pretty; }
 
 .detail-head {
   position: sticky;
@@ -674,7 +713,7 @@ mark {
 }
 .fix-row .field { margin: 0; }
 
-.sheet, .today-view { display: flex; flex-direction: column; gap: 16px; }
+.sheet, .today-view { display: flex; flex: 1; flex-direction: column; gap: 16px; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .panel {
   padding: 16px;
@@ -707,9 +746,10 @@ textarea { width: 100%; min-height: 120px; padding: 8px; resize: vertical; }
 .rules { width: 100%; border-collapse: collapse; margin-top: 12px; }
 .rules th, .rules td { padding: 8px 6px; border-bottom: 1px solid var(--border); text-align: left; }
 .rules .arrow { color: var(--text-3); width: 24px; }
-.monitor-head { margin-bottom: 16px; }
-.monitor-switch { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 240px; }
-.monitor-warn { margin: 0; color: var(--warning); font-size: var(--fs-12); font-weight: 600; line-height: 16px; text-align: right; }
+.monitor-head { align-items: flex-start; margin-bottom: 8px; }
+.monitor-copy { flex: 1 1 220px; min-width: 0; }
+.monitor-head .switch { flex: 0 0 auto; margin-left: auto; }
+.monitor-warn { margin: 0 0 12px; color: var(--warning); font-size: var(--fs-12); font-weight: 600; line-height: 16px; }
 .switch { flex: 0 0 auto; align-items: center; gap: 8px; white-space: nowrap; }
 .switch b { font-weight: 600; white-space: nowrap; }
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }

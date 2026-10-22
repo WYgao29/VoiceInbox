@@ -50,8 +50,7 @@ const LABEL_TONE: Record<string, StatusTone> = {
 
 export function recordingsEmptyKind(input: EmptyQuery): EmptyKind {
   if (input.query.trim()) return "search";
-  const narrowed = Boolean(input.kind || input.scene || input.tag || input.from || input.to || (input.status && input.status !== "done"));
-  if (!narrowed && input.total <= 0) return "none";
+  if (input.total <= 0) return "none";
   return "filter";
 }
 

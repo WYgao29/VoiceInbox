@@ -31,6 +31,16 @@ export function NavIcon({ name }: { name: "today" | "recordings" | "vocab" | "se
   );
 }
 
+export function MoreIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+      <circle cx="3.5" cy="8" r="1.2" />
+      <circle cx="8" cy="8" r="1.2" />
+      <circle cx="12.5" cy="8" r="1.2" />
+    </svg>
+  );
+}
+
 export function EmptyIcon({ name }: { name: "search" | "filter" | "mic" }) {
   const common = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   if (name === "search") {

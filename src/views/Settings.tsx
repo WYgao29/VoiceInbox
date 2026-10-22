@@ -99,23 +99,26 @@ export function Settings() {
   };
 
   const pythonPath = state.backend?.python || "";
+  const pythonNote = state.backend?.owned ? "本应用拉起，退出时会关掉" : "本次没有拉起新进程，复用已有后端";
+  const pythonBroken = state.backend?.pythonExecutable === false ? "这个文件目前不可执行。" : "";
   return (
     <div className="sheet">
       {pythonPath ? (
-        <p className="python-banner" title={pythonPath}>
-          解释器 {pythonPath}
-          {state.backend?.owned ? "（本应用拉起，退出时会关掉）" : "（本次没有拉起新进程，复用已有后端）"}
-          {state.backend?.pythonExecutable === false ? " 这个文件目前不可执行。" : ""}
+        <p className="python-banner" title={`${pythonPath}（${pythonNote}）${pythonBroken}`}>
+          <span className="python-banner-label">解释器</span>
+          <span className="path-inline">{pythonPath}</span>
+          <span className="python-banner-note">
+            （{pythonNote}）{pythonBroken}
+          </span>
         </p>
       ) : null}
       <section className="panel" aria-label="后台监控" data-state={monitor?.state || ""}>
         <div className="monitor-head">
-          <div>
+          <div className="monitor-copy">
             <h2>后台监控</h2>
             <p className="help">打开后，这台 Mac 会在后台自动发现语音备忘录里的新录音并转写，不用开着这个窗口。关掉后只能在这里手动导入或检查。</p>
           </div>
-          <div className="monitor-switch">
-            <label className="switch" title="打开或暂停后台监控" aria-describedby="monitor-launchd-warning">
+          <label className="switch" title="打开或暂停后台监控" aria-describedby="monitor-launchd-warning">
               <input
                 type="checkbox"
                 role="switch"
@@ -132,11 +135,10 @@ export function Settings() {
               </span>
               <b>{monitor?.state_label || "—"}</b>
             </label>
-            <p id="monitor-launchd-warning" className="monitor-warn">
-              {MONITOR_WRITE_WARNING}
-            </p>
-          </div>
         </div>
+        <p id="monitor-launchd-warning" className="monitor-warn">
+          {MONITOR_WRITE_WARNING}
+        </p>
         <div className="field">
           <span>多久检查一次</span>
           <div className="seg" role="group" aria-label="检查间隔">
@@ -306,9 +308,11 @@ export function Settings() {
             />
             <span>写入 Obsidian</span>
           </label>
-          <p className="help">
-            写到 {state.featureMeta.vault || "（没设置库）"}。只改程序维护的那一段，你在笔记里写的其他内容会保留。当日摘要在每天 {state.featureMeta.digest_time || "22:30"} 之后生成。
+          <p className="help">写到</p>
+          <p className="path-line" title={state.featureMeta.vault || undefined}>
+            {state.featureMeta.vault || "（没设置库）"}
           </p>
+          <p className="help">只改程序维护的那一段，你在笔记里写的其他内容会保留。当日摘要在每天 {state.featureMeta.digest_time || "22:30"} 之后生成。</p>
           <label className="check">
             <input type="checkbox" checked={digestOn} onChange={(event) => setDigestOn(event.target.checked)} />
             <span>每天晚上生成当日摘要</span>
