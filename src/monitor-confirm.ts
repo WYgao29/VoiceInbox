@@ -13,12 +13,12 @@ export function monitorConfirmText(action: MonitorWrite, detail = ""): string {
 }
 
 export async function performMonitorWrite<T>(options: {
-  confirm: (message: string) => boolean;
+  confirm: (message: string) => boolean | Promise<boolean>;
   action: MonitorWrite;
   detail?: string;
   send: () => Promise<T>;
 }): Promise<T | "cancelled"> {
   const message = monitorConfirmText(options.action, options.detail ?? "");
-  if (!options.confirm(message)) return "cancelled";
+  if (!(await options.confirm(message))) return "cancelled";
   return options.send();
 }

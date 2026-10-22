@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { interpretKey, visibleDetailTabs } from "../shared/text.js";
 import type { ViewName } from "../shared/types.js";
+import { ConfirmProvider } from "./confirm-dialog";
 import { destinationFromHash } from "./hash-view";
+import { useDismissable } from "./dismissable";
 import { InboxProvider, useInbox } from "./inbox";
 import { applyPlaybackRate } from "./playback";
 import { Sidebar } from "./Sidebar";
+import { LoadingSkeleton } from "./skeleton";
 import { InfoPanel } from "./views/InfoPanel";
 import { Recordings } from "./views/Recordings";
 import { Settings } from "./views/Settings";
@@ -32,9 +35,33 @@ function Shell() {
   const inboxRef = useRef(inbox);
   inboxRef.current = inbox;
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const menuRoot = useRef<HTMLDivElement | null>(null);
   const dragDepth = useRef(0);
   const [menu, setMenu] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 1099px)").matches);
+  const closeMenu = useCallback(() => setMenu(false), []);
+  const closePanel = useCallback(() => setPanelOpen(false), []);
+  useDismissable(menu, closeMenu, menuRoot);
   const { state } = inbox;
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1099px)");
+    const onChange = () => setNarrow(media.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    setMenu(false);
+    setPanelOpen(false);
+  }, [state.view]);
+
+  useEffect(() => {
+    const onImport = () => fileRef.current?.click();
+    window.addEventListener("voiceinbox-import", onImport);
+    return () => window.removeEventListener("voiceinbox-import", onImport);
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -95,8 +122,6 @@ function Shell() {
   }, []);
 
   const monitor = state.monitor;
-  const pythonPath = state.backend?.python || "";
-  const pythonShort = pythonPath.split("/").filter(Boolean).slice(-2).join("/");
   const monitorText = !monitor ? "监控" : monitor.state === "off" ? "监控已暂停" : `监控 · 每 ${monitor.interval_min} 分钟`;
   const todayStamp = () => {
     const now = new Date();
@@ -105,7 +130,7 @@ function Shell() {
 
   return (
     <div
-      className="app-shell"
+      className={panelOpen ? "app-shell is-panel-open" : "app-shell"}
       onDragEnter={(event) => {
         if (![...event.dataTransfer.types].includes("Files")) return;
         event.preventDefault();
@@ -146,17 +171,15 @@ function Shell() {
           </label>
           <button type="button" className="pill" title="后台任务状态" onClick={() => inbox.setView("settings")}>
             <span className={`dot ${state.activity?.phase || "idle"}`} />
-            {state.activity?.text || "读取中…"}
+            <span className="pill-text">{state.activity?.text || "读取中…"}</span>
           </button>
           <button type="button" className="pill" data-state={monitor?.state || ""} title="后台监控" onClick={() => inbox.setView("settings")}>
             <span className="dot" />
-            {monitorText}
+            <span className="pill-text">{monitorText}</span>
           </button>
-          {pythonPath ? (
-            <span className="pill python-pill" title={pythonPath}>
-              {state.backend?.owned ? "解释器" : "预定解释器"} {pythonShort}
-            </span>
-          ) : null}
+          <button type="button" className="secondary panel-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen((open) => !open)}>
+            信息
+          </button>
           <button type="button" className="primary" onClick={() => fileRef.current?.click()}>
             导入音频
           </button>
@@ -171,8 +194,8 @@ function Shell() {
               if (file) void inbox.upload(file);
             }}
           />
-          <div className="menu">
-            <button type="button" className="secondary" aria-expanded={menu} onClick={() => setMenu((open) => !open)}>
+          <div className="menu" ref={menuRoot}>
+            <button type="button" className="secondary" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu((open) => !open)}>
               ⋯
             </button>
             {menu ? (
@@ -218,14 +241,17 @@ function Shell() {
           </div>
         ) : null}
         <div className="main-body">
-          {!state.ready ? <p className="empty big">正在读取…</p> : null}
+          {!state.ready ? <LoadingSkeleton /> : null}
           {state.ready && state.view === "recordings" ? <Recordings /> : null}
           {state.ready && state.view === "today" ? <Today /> : null}
           {state.ready && state.view === "vocab" ? <Vocab /> : null}
           {state.ready && state.view === "settings" ? <Settings /> : null}
         </div>
       </div>
-      <InfoPanel />
+      {panelOpen && narrow ? (
+        <button type="button" className="panel-scrim" aria-label="关闭信息栏" onClick={closePanel} />
+      ) : null}
+      <InfoPanel drawer={panelOpen && narrow} onClose={closePanel} />
       {state.notice ? (
         <p className="toast" role="status">
           {state.notice}
@@ -234,8 +260,8 @@ function Shell() {
       {state.dropOver ? <div className="drop-overlay">松开即可导入</div> : null}
       {state.helpOpen ? (
         <div className="scrim" onClick={() => inbox.setHelp(false)}>
-          <div className="dialog" role="dialog" aria-label="键盘快捷键" onClick={(event) => event.stopPropagation()}>
-            <h3>键盘快捷键</h3>
+          <div className="dialog" role="dialog" aria-modal="true" aria-label="键盘快捷键" onClick={(event) => event.stopPropagation()}>
+            <h2>键盘快捷键</h2>
             <dl className="keys">
               <div>
                 <dt>
@@ -280,9 +306,11 @@ function Shell() {
                 <dd>打开这个说明</dd>
               </div>
             </dl>
-            <button type="button" className="primary" onClick={() => inbox.setHelp(false)}>
-              知道了
-            </button>
+            <div className="dialog-actions">
+              <button type="button" className="primary" onClick={() => inbox.setHelp(false)}>
+                知道了
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -292,8 +320,10 @@ function Shell() {
 
 export function App() {
   return (
-    <InboxProvider>
-      <Shell />
-    </InboxProvider>
+    <ConfirmProvider>
+      <InboxProvider>
+        <Shell />
+      </InboxProvider>
+    </ConfirmProvider>
   );
 }

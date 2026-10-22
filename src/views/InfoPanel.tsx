@@ -1,5 +1,7 @@
+import { useRef } from "react";
 import { openObsidian } from "../api";
 import { RichText } from "../components";
+import { useDismissable } from "../dismissable";
 import { useInbox, type TodayTodo } from "../inbox";
 import { recordingTitle, shortWhen } from "../../shared/text.js";
 
@@ -7,7 +9,9 @@ function Fact({ name, value }: { name: string; value: string }) {
   return (
     <div>
       <dt>{name}</dt>
-      <dd>{value || "—"}</dd>
+      <dd className={value.includes("/") ? "path-value" : undefined} title={value || undefined}>
+        {value || "—"}
+      </dd>
     </div>
   );
 }
@@ -133,13 +137,18 @@ function SettingsInfo() {
   );
 }
 
-export function InfoPanel() {
+export function InfoPanel({ drawer, onClose }: { drawer: boolean; onClose: () => void }) {
   const inbox = useInbox();
+  const root = useRef<HTMLElement | null>(null);
+  useDismissable(drawer, onClose, root);
   const title = inbox.state.view === "recordings" ? recordingTitle(inbox.state.detail) : "";
   return (
-    <aside className="info-pane" aria-label="信息">
+    <aside className="info-pane" aria-label="信息" ref={root}>
       <div className="col-head">
         <h2>{inbox.state.view === "recordings" ? title || "信息" : "信息"}</h2>
+        <button type="button" className="secondary panel-close" onClick={onClose}>
+          关闭
+        </button>
       </div>
       <div className="info-body">
         {inbox.state.view === "today" ? <TodayInfo /> : null}

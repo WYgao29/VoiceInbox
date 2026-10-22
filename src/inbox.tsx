@@ -5,7 +5,18 @@ import { api, desktopBackend, uploadFile } from "./api";
 import { destinationFromHash } from "./hash-view";
 import { applyPlaybackRate } from "./playback";
 import { executeRunMonitor } from "./run-monitor";
+import { useConfirm, useDismissConfirm } from "./confirm-dialog";
 import { applyTheme, readThemeChoice } from "./theme";
+import {
+  deleteRuleConfirm,
+  digestConfirm,
+  importConfirm,
+  retranscribeConfirm,
+  retryFailedConfirm,
+  retryOneConfirm,
+  runIfConfirmed,
+  summarizeConfirm,
+} from "./ui-state";
 
 export interface TodayTodo {
   id: string;
@@ -173,6 +184,7 @@ interface InboxApi {
   setFrom: (from: string) => void;
   setTo: (to: string) => void;
   clearDates: () => void;
+  clearBrowse: () => void;
   select: (id: string, options?: { keep?: boolean; seek?: number | null }) => Promise<void>;
   setTab: (tab: DetailTab) => void;
   setShowRaw: (showRaw: boolean) => void;
@@ -250,6 +262,8 @@ function detailDirty(audio: HTMLAudioElement | null): boolean {
 }
 
 export function InboxProvider({ children }: { children: ReactNode }) {
+  const ask = useConfirm();
+  const dismissConfirm = useDismissConfirm();
   const [state, setState] = useState<InboxState>(() => ({ ...initial, theme: readThemeChoice() }));
   const stateRef = useRef(state);
   const listGen = useRef(0);
@@ -433,6 +447,20 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       commit((current) => ({ ...current, from: "", to: "" }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
+    clearBrowse: () => {
+      commit((current) => ({
+        ...current,
+        query: "",
+        kind: "",
+        scene: "",
+        tag: "",
+        from: "",
+        to: "",
+        status: "all",
+        view: "recordings",
+      }));
+      void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
+    },
     select,
     setTab: (tab) => commit((current) => ({ ...current, tab })),
     setShowRaw: (showRaw) => commit((current) => ({ ...current, showRaw })),
@@ -503,10 +531,14 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       notify(payload.message || (applyTo ? "已加入纠错，这条已经更新" : "已添加。以后的录音会自动替换。"));
     },
     removeRule: async (wrong, right) => {
-      if (!window.confirm(`删掉「${wrong} → ${right}」？`)) return;
-      await api("/api/replacements/remove", { method: "POST", json: { wrong } });
-      await loadRules();
-      notify("已删掉。已经替换过的文本要等下次整理，或在命令行跑 vocab apply 才会还原。");
+      await runIfConfirmed(
+        () => ask(deleteRuleConfirm(wrong, right)),
+        async () => {
+          await api("/api/replacements/remove", { method: "POST", json: { wrong } });
+          await loadRules();
+          notify("已删掉。已经替换过的文本要等下次整理，或在命令行跑 vocab apply 才会还原。");
+        },
+      );
     },
     saveSettings: async (body) => {
       const payload = await api<{ file?: SettingsFile; env_overrides?: string[] }>("/api/settings", { method: "POST", json: body });
@@ -570,7 +602,8 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     },
     upload: async (file) => {
       if (stateRef.current.busy) return;
-      if (!window.confirm("导入后会马上转写，峰值大约 9.6GB。文件只写入数据目录。继续？")) return;
+      const gate = await runIfConfirmed(() => ask(importConfirm()), async () => undefined);
+      if (gate === "cancelled") return;
       commit((current) => ({
         ...current,
         busy: true,
@@ -617,31 +650,36 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       }
     },
     retryOne: async (id) => {
-      if (!window.confirm("重试这条会加载 Qwen，峰值大约 9.6GB。继续？")) return;
-      await runJob(async () => {
-        await api(`/api/recordings/${id}/retry`, { method: "POST" });
-      }, "重试结束", "正在转写。这一轮和后台任务共用一把锁，峰值大约 9.6GB。");
+      await runIfConfirmed(() => ask(retryOneConfirm()), () =>
+        runJob(async () => {
+          await api(`/api/recordings/${id}/retry`, { method: "POST" });
+        }, "重试结束", "正在转写。这一轮和后台任务共用一把锁，峰值大约 9.6GB。"),
+      );
     },
     retryFailed: async () => {
-      if (!window.confirm("重试所有失败的录音。有录音时会加载 Qwen。继续？")) return;
-      await runJob(async () => {
-        await api("/api/retry", { method: "POST", json: { scope: "failed-and-dead" } });
-      }, "失败项已处理", "正在重试失败的录音…");
+      await runIfConfirmed(() => ask(retryFailedConfirm()), () =>
+        runJob(async () => {
+          await api("/api/retry", { method: "POST", json: { scope: "failed-and-dead" } });
+        }, "失败项已处理", "正在重试失败的录音…"),
+      );
     },
     retranscribe: async (id, context, hotwords) => {
-      if (!window.confirm("开始重转会加载 Qwen，峰值大约 9.6GB，并占用和后台任务同一把锁。继续？")) return;
-      await runJob(async () => {
-        await api(`/api/recordings/${id}/retranscribe`, { method: "POST", json: { context, hotwords } });
-      }, "重转结束", "正在转写。这一轮和后台任务共用一把锁，峰值大约 9.6GB。");
+      await runIfConfirmed(() => ask(retranscribeConfirm()), () =>
+        runJob(async () => {
+          await api(`/api/recordings/${id}/retranscribe`, { method: "POST", json: { context, hotwords } });
+        }, "重转结束", "正在转写。这一轮和后台任务共用一把锁，峰值大约 9.6GB。"),
+      );
     },
     summarize: async (id, template) => {
-      if (!window.confirm("会用本机模型（约 19GB）重新整理，并占用和后台任务同一把锁。原始转写不变。继续？")) return;
-      await runJob(async () => {
-        await api(`/api/recordings/${id}/summarize`, { method: "POST", json: { template } });
-      }, "总结已更新", "正在用本机模型整理，长录音要一两分钟…");
+      await runIfConfirmed(() => ask(summarizeConfirm()), () =>
+        runJob(async () => {
+          await api(`/api/recordings/${id}/summarize`, { method: "POST", json: { template } });
+        }, "总结已更新", "正在用本机模型整理，长录音要一两分钟…"),
+      );
     },
     digest: async (day) => {
-      if (!window.confirm(`用本机模型汇总 ${day} 的录音，写进 Obsidian 的当日摘要。会占用和转写同一把锁。继续？`)) return;
+      const gate = await runIfConfirmed(() => ask(digestConfirm(day)), async () => undefined);
+      if (gate === "cancelled") return;
       await runJob(async () => {
         const payload = await api<{ message?: string }>("/api/digest", { method: "POST", json: { date: day } });
         if (payload.message) throw new Error(payload.message);
@@ -700,16 +738,36 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     }, 8000);
     window.__voiceinboxShot = async (spec) => {
       try {
+        dismissConfirm();
         const theme: ThemeChoice = spec.theme === "dark" || spec.theme === "light" ? spec.theme : "system";
         applyTheme(theme);
-        commit((current) => ({ ...current, theme, helpOpen: false, dropOver: false }));
         const view: ViewName =
           spec.view === "today" || spec.view === "vocab" || spec.view === "settings" ? spec.view : "recordings";
-        setView(view);
+        commit((current) => ({
+          ...current,
+          ready: true,
+          theme,
+          helpOpen: false,
+          dropOver: false,
+          view,
+          query: spec.empty ? "zzzz-no-match-shot" : "",
+          status: spec.empty ? "all" : current.status,
+          kind: spec.empty ? "" : current.kind,
+          scene: spec.empty ? "" : current.scene,
+          tag: spec.empty ? "" : current.tag,
+          from: spec.empty ? "" : current.from,
+          to: spec.empty ? "" : current.to,
+        }));
         if (view === "recordings") {
           await loadList();
-          const id = stateRef.current.selectedId || stateRef.current.items[0]?.id;
-          if (id) await select(id, { keep: stateRef.current.detail?.id === id });
+          if (!spec.empty) {
+            const id = stateRef.current.selectedId || stateRef.current.items[0]?.id;
+            if (id) await select(id, { keep: stateRef.current.detail?.id === id });
+            const tab = spec.tab;
+            if (tab === "summary" || tab === "todos" || tab === "mind" || tab === "text") {
+              commit((current) => ({ ...current, tab }));
+            }
+          }
         }
         if (view === "today") await loadToday();
         if (view === "vocab") {
@@ -724,9 +782,13 @@ export function InboxProvider({ children }: { children: ReactNode }) {
             loadSystem().catch(() => undefined),
           ]);
         }
+        if (spec.dialog) {
+          void ask(deleteRuleConfirm("扫项目", "Sol 项目"));
+        }
       } catch (error) {
         notify(error instanceof Error ? error.message : "截图准备失败");
       }
+      if (spec.dialog) await new Promise((resolve) => window.setTimeout(resolve, 60));
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(null))));
       return true;
     };

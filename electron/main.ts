@@ -10,7 +10,7 @@ import { probeVoiceInbox } from "./probe.js";
 import { isExplainWindowSender } from "./quit.js";
 import { missingRootDialog, missingRootHtml, resolveProjectRoot, type MissingRootCopy } from "./roots.js";
 import { startUiServer } from "./server.js";
-import { captureViews } from "./shots.js";
+import { capturePlan, captureViews } from "./shots.js";
 
 app.setName("VoiceInbox");
 
@@ -29,6 +29,7 @@ function readArg(name: string): string | null {
 const requestedPortText = readArg("--backend-port") || process.env.VOICEINBOX_BACKEND_PORT || "";
 const requestedPort = requestedPortText ? Number(requestedPortText) : null;
 const screenshotDir = readArg("--screenshot-dir") || process.env.VOICEINBOX_SCREENSHOT_DIR || "";
+const screenshotPlan = readArg("--screenshot-plan") || process.env.VOICEINBOX_SCREENSHOT_PLAN || "";
 
 let window: BrowserWindow | null = null;
 let explainWindow: BrowserWindow | null = null;
@@ -109,12 +110,12 @@ function createWindow(uiPort: number): BrowserWindow {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 1100,
+    minWidth: 960,
     minHeight: 720,
     title: "VoiceInbox",
     backgroundColor: "#ffffff",
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 18 },
+    trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
       preload: join(here, "preload.cjs"),
       contextIsolation: true,
@@ -271,7 +272,9 @@ async function boot(): Promise<void> {
       void (async () => {
         try {
           await sleep(400);
-          const files = await captureViews(window!, screenshotDir);
+          const files = screenshotPlan
+            ? await capturePlan(window!, screenshotDir, screenshotPlan)
+            : await captureViews(window!, screenshotDir);
           console.log(files.join("\n"));
         } catch (error) {
           console.error(error);

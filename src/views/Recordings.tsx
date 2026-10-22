@@ -1,8 +1,11 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { openObsidian } from "../api";
 import { MarkdownView, MindMap, RichText } from "../components";
+import { useDismissable } from "../dismissable";
+import { EmptyState } from "../empty-state";
 import { useInbox } from "../inbox";
 import { applyPlaybackRate } from "../playback";
+import { recordingsEmptyCopy, recordingsEmptyKind, statusTone } from "../ui-state";
 import type { Recording, Rule, Todo } from "../../shared/types.js";
 import { DAY_LABEL, DAY_ORDER, STATUS_FILTERS, clock, fileStem, markdownTranscript, recordingTitle, summaryTabLabel, timeOnly, visibleDetailTabs } from "../../shared/text.js";
 
@@ -61,9 +64,121 @@ function Card({ item }: { item: Recording }) {
   );
 }
 
+function PlayGlyph({ paused }: { paused: boolean }) {
+  return paused ? (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M5 3.2v9.6l8-4.8-8-4.8Z" fill="currentColor" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4.4 3.2h2.3v9.6H4.4zm4.9 0h2.3v9.6H9.3z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function Player({ id }: { id: string }) {
+  const inbox = useInbox();
+  const [playing, setPlaying] = useState(false);
+  const [time, setTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  return (
+    <div className="player-bar">
+      <audio
+        key={id}
+        ref={inbox.audioRef}
+        preload="none"
+        tabIndex={-1}
+        aria-hidden="true"
+        src={`/api/recordings/${id}/audio`}
+        onLoadedMetadata={(event) => {
+          setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
+          applyPlaybackRate(event.currentTarget, inbox.state.rate);
+        }}
+        onTimeUpdate={(event) => setTime(event.currentTarget.currentTime || 0)}
+        onPlay={(event) => {
+          setPlaying(true);
+          applyPlaybackRate(event.currentTarget, inbox.state.rate);
+        }}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+      />
+      <button
+        type="button"
+        className="player-toggle"
+        aria-label={playing ? "暂停" : "播放"}
+        onClick={() => {
+          const audio = inbox.audioRef.current;
+          if (!audio) return;
+          if (audio.paused) void audio.play().catch(() => undefined);
+          else audio.pause();
+        }}
+      >
+        <PlayGlyph paused={!playing} />
+      </button>
+      <span className="player-time">{clock(time)}</span>
+      <input
+        className="player-range"
+        type="range"
+        min={0}
+        max={duration || 0}
+        step={0.1}
+        value={duration ? Math.min(time, duration) : 0}
+        aria-label="播放进度"
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          const audio = inbox.audioRef.current;
+          if (audio) audio.currentTime = next;
+          setTime(next);
+        }}
+      />
+      <span className="player-time">{clock(duration)}</span>
+      <select aria-label="倍速" value={String(inbox.state.rate)} onChange={(event) => inbox.setRate(Number(event.target.value))}>
+        {["0.75", "1", "1.25", "1.5", "2"].map((rate) => (
+          <option key={rate} value={rate}>
+            {rate}×
+          </option>
+        ))}
+      </select>
+      {typeof inbox.state.seek === "number" ? (
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => {
+            const audio = inbox.audioRef.current;
+            if (!audio || inbox.state.seek == null) return;
+            const target = inbox.state.seek;
+            const go = () => {
+              audio.currentTime = target;
+              void audio.play().catch(() => undefined);
+            };
+            if (audio.readyState >= 1) go();
+            else {
+              audio.preload = "metadata";
+              audio.addEventListener("loadedmetadata", go, { once: true });
+              audio.load();
+            }
+          }}
+        >
+          跳到命中处 ≈ {clock(inbox.state.seek)}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function Recordings() {
   const inbox = useInbox();
   const { state } = inbox;
+  const emptyKind = recordingsEmptyKind({
+    query: state.query,
+    kind: state.kind,
+    scene: state.scene,
+    tag: state.tag,
+    from: state.from,
+    to: state.to,
+    status: state.status,
+    total: state.counts.all ?? 0,
+  });
   const groups = DAY_ORDER.map((key) => ({
     key,
     label: DAY_LABEL[key],
@@ -135,7 +250,16 @@ export function Recordings() {
               ))}
             </section>
           ))}
-          {!state.items.length ? <p className="empty">还没有记录。</p> : null}
+          {!state.items.length ? (
+            <EmptyState
+              copy={recordingsEmptyCopy(emptyKind)}
+              onAction={() => {
+                if (emptyKind === "search") inbox.setQuery("");
+                else if (emptyKind === "filter") inbox.clearBrowse();
+                else window.dispatchEvent(new Event("voiceinbox-import"));
+              }}
+            />
+          ) : null}
         </div>
         <p className="keys-hint">
           <kbd>/</kbd> 搜索 · <kbd>j</kbd>
@@ -155,6 +279,15 @@ function Detail() {
   const [wrong, setWrong] = useState("");
   const [right, setRight] = useState("");
   const [template, setTemplate] = useState("auto");
+  const [toolsMenu, setToolsMenu] = useState<"" | "summary" | "text">("");
+  const summaryMenu = useRef<HTMLDivElement | null>(null);
+  const textMenu = useRef<HTMLDivElement | null>(null);
+  const closeTools = useCallback(() => setToolsMenu(""), []);
+  useDismissable(toolsMenu === "summary", closeTools, summaryMenu);
+  useDismissable(toolsMenu === "text", closeTools, textMenu);
+  useEffect(() => {
+    setToolsMenu("");
+  }, [inbox.state.tab, item?.id]);
   if (!item || item.id !== inbox.state.selectedId) {
     return (
       <section className="detail" aria-label="录音详情">
@@ -194,8 +327,16 @@ function Detail() {
       <div className="detail-head">
         <div className="title-row">
           <span className="scene-pill">{analysis?.route === "flash" ? "闪念" : item.scene || item.status_label}</span>
-          {item.group !== "done" ? <span className="status-pill">{item.status_label}</span> : null}
-          {item.group === "done" && analysis && !analysis.llm ? <span className="status-pill">{analysis.state_label}</span> : null}
+          {item.group !== "done" ? (
+            <span className="status-pill" data-state={statusTone(item.group, item.status_label)}>
+              {item.status_label}
+            </span>
+          ) : null}
+          {item.group === "done" && analysis && !analysis.llm ? (
+            <span className="status-pill" data-state={statusTone(item.group, analysis.state_label)}>
+              {analysis.state_label}
+            </span>
+          ) : null}
         </div>
         <h2>{recordingTitle(item)}</h2>
         <p className="meta">
@@ -203,57 +344,11 @@ function Detail() {
             .filter(Boolean)
             .join(" · ")}
         </p>
-        {item.has_audio ? (
-          <div className="player-bar">
-            <audio
-              key={item.id}
-              ref={inbox.audioRef}
-              controls
-              preload="none"
-              src={`/api/recordings/${item.id}/audio`}
-              onLoadedMetadata={(event) => {
-                applyPlaybackRate(event.currentTarget, inbox.state.rate);
-              }}
-              onPlay={(event) => {
-                applyPlaybackRate(event.currentTarget, inbox.state.rate);
-              }}
-            />
-            <select aria-label="倍速" value={String(inbox.state.rate)} onChange={(event) => inbox.setRate(Number(event.target.value))}>
-              {["0.75", "1", "1.25", "1.5", "2"].map((rate) => (
-                <option key={rate} value={rate}>
-                  {rate}×
-                </option>
-              ))}
-            </select>
-            {typeof inbox.state.seek === "number" ? (
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => {
-                  const audio = inbox.audioRef.current;
-                  if (!audio || inbox.state.seek == null) return;
-                  const target = inbox.state.seek;
-                  const go = () => {
-                    audio.currentTime = target;
-                    void audio.play().catch(() => undefined);
-                  };
-                  if (audio.readyState >= 1) go();
-                  else {
-                    audio.preload = "metadata";
-                    audio.addEventListener("loadedmetadata", go, { once: true });
-                    audio.load();
-                  }
-                }}
-              >
-                跳到命中处 ≈ {clock(inbox.state.seek)}
-              </button>
-            ) : null}
-          </div>
-        ) : (
+        {item.has_audio ? <Player id={item.id} /> : (
           <p className="help">{item.audio_note || "找不到可以播放的音频。"}</p>
         )}
         {tabs.length ? (
-          <div className="action-row">
+          <div className="action-row tool-row">
             <div className="dtabs" role="tablist">
               {tabs.map((tab) => (
                 <button key={tab} type="button" className={inbox.state.tab === tab ? "is-on" : ""} onClick={() => inbox.setTab(tab)}>
@@ -264,12 +359,12 @@ function Detail() {
             </div>
             <div className="bulk">
               {analysis?.obsidian_uri ? (
-                <button type="button" className="secondary" onClick={() => openObsidian(analysis.obsidian_uri || "")}>
+                <button type="button" className="secondary" data-collapse onClick={() => openObsidian(analysis.obsidian_uri || "")}>
                   在 Obsidian 打开
                 </button>
               ) : null}
               {analysis && analysis.route !== "flash" ? (
-                <select aria-label="总结模板" value={templates.includes(template) ? template : "auto"} onChange={(event) => setTemplate(event.target.value)}>
+                <select aria-label="总结模板" data-collapse value={templates.includes(template) ? template : "auto"} onChange={(event) => setTemplate(event.target.value)}>
                   <option value="auto">模板：自动</option>
                   {templates.map((name) => (
                     <option key={name} value={name}>
@@ -282,6 +377,38 @@ function Detail() {
                 <button type="button" className="secondary" disabled={inbox.state.busy} onClick={() => void inbox.summarize(item.id, analysis.route === "flash" ? "auto" : template)}>
                   {analysis.route === "flash" ? (analysis.llm ? "重新润色" : "润色") : analysis.llm ? "重新生成总结" : "生成总结"}
                 </button>
+              ) : null}
+              {analysis?.obsidian_uri || (analysis && analysis.route !== "flash") ? (
+                <div className="menu overflow-menu" ref={summaryMenu}>
+                  <button
+                    type="button"
+                    className="secondary"
+                    aria-haspopup="menu"
+                    aria-expanded={toolsMenu === "summary"}
+                    onClick={() => setToolsMenu((open) => (open === "summary" ? "" : "summary"))}
+                  >
+                    更多
+                  </button>
+                  {toolsMenu === "summary" ? (
+                    <div className="menu-pop" role="menu">
+                      {analysis.obsidian_uri ? (
+                        <button type="button" onClick={() => openObsidian(analysis.obsidian_uri || "")}>
+                          在 Obsidian 打开
+                        </button>
+                      ) : null}
+                      {analysis.route !== "flash" ? (
+                        <select aria-label="总结模板" value={templates.includes(template) ? template : "auto"} onChange={(event) => setTemplate(event.target.value)}>
+                          <option value="auto">模板：自动</option>
+                          {templates.map((name) => (
+                            <option key={name} value={name}>
+                              模板：{name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           </div>
@@ -392,7 +519,7 @@ function Detail() {
       ) : null}
       {inbox.state.tab === "text" ? (
         <div className="dpane">
-          <div className="text-head">
+          <div className="text-head tool-row">
             {item.corrected_differs ? (
               <div className="seg">
                 <button type="button" className={!inbox.state.showRaw ? "is-on" : ""} onClick={() => inbox.setShowRaw(false)}>
@@ -409,12 +536,13 @@ function Detail() {
               <button type="button" className="secondary" onClick={() => void copyText()}>
                 复制全文
               </button>
-              <button type="button" className="secondary" onClick={() => download(`${fileStem(recordingTitle(item))}.txt`, shownText, "text/plain;charset=utf-8")}>
+              <button type="button" className="secondary" data-collapse onClick={() => download(`${fileStem(recordingTitle(item))}.txt`, shownText, "text/plain;charset=utf-8")}>
                 导出 txt
               </button>
               <button
                 type="button"
                 className="secondary"
+                data-collapse
                 onClick={() =>
                   download(
                     `${fileStem(recordingTitle(item))}.md`,
@@ -430,6 +558,41 @@ function Detail() {
               >
                 导出 md
               </button>
+              <div className="menu overflow-menu" ref={textMenu}>
+                <button
+                  type="button"
+                  className="secondary"
+                  aria-haspopup="menu"
+                  aria-expanded={toolsMenu === "text"}
+                  onClick={() => setToolsMenu((open) => (open === "text" ? "" : "text"))}
+                >
+                  更多
+                </button>
+                {toolsMenu === "text" ? (
+                  <div className="menu-pop" role="menu">
+                    <button type="button" onClick={() => download(`${fileStem(recordingTitle(item))}.txt`, shownText, "text/plain;charset=utf-8")}>
+                      导出 txt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        download(
+                          `${fileStem(recordingTitle(item))}.md`,
+                          markdownTranscript({
+                            title: recordingTitle(item),
+                            recordedLabel: item.recorded_label || "",
+                            durationLabel: item.duration_label || "",
+                            text: shownText,
+                          }),
+                          "text/markdown;charset=utf-8",
+                        )
+                      }
+                    >
+                      导出 md
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
           {!inbox.state.showRaw && item.corrected_differs ? <p className="help">带下划线的是按纠错表替换过的词，鼠标停上去能看到原来的写法。</p> : null}

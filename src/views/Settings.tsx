@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useConfirm } from "../confirm-dialog";
 import { useInbox } from "../inbox";
 import { MONITOR_WRITE_WARNING, performMonitorWrite, type MonitorWrite } from "../monitor-confirm";
+import { monitorDialog } from "../ui-state";
 
 const LANGUAGES: [string, string][] = [
   ["Chinese", "中文"],
@@ -12,6 +14,7 @@ const PRESETS = [1, 5, 15, 30, 60];
 
 export function Settings() {
   const inbox = useInbox();
+  const ask = useConfirm();
   const { state } = inbox;
   const monitor = state.monitor;
   const file = state.settingsFile;
@@ -88,7 +91,7 @@ export function Settings() {
 
   const commitMonitor = (action: MonitorWrite, send: () => Promise<unknown>, detail?: string) => {
     void performMonitorWrite({
-      confirm: (message) => window.confirm(message),
+      confirm: (message) => ask(monitorDialog(message)),
       action,
       detail,
       send,
@@ -99,7 +102,7 @@ export function Settings() {
   return (
     <div className="sheet">
       {pythonPath ? (
-        <p className="python-banner">
+        <p className="python-banner" title={pythonPath}>
           解释器 {pythonPath}
           {state.backend?.owned ? "（本应用拉起，退出时会关掉）" : "（本次没有拉起新进程，复用已有后端）"}
           {state.backend?.pythonExecutable === false ? " 这个文件目前不可执行。" : ""}
@@ -382,7 +385,9 @@ export function Settings() {
               .map(([name, value]) => (
                 <div key={name}>
                   <dt>{name}</dt>
-                  <dd>{value}</dd>
+                  <dd className={value.includes("/") ? "path-value" : undefined} title={value}>
+                    {value}
+                  </dd>
                 </div>
               ))}
           </dl>

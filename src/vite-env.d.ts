@@ -18,6 +18,9 @@ interface VoiceinboxDesktop {
 interface ShotSpec {
   theme: string;
   view: string;
+  tab?: string;
+  empty?: boolean;
+  dialog?: boolean;
 }
 
 interface Window {

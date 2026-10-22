@@ -1,5 +1,6 @@
 import { APP_VERSION } from "../shared/version.js";
 import type { ThemeChoice, ViewName } from "../shared/types.js";
+import { NavIcon } from "./icons";
 import { useInbox } from "./inbox";
 
 const NAV: { view: ViewName; label: string }[] = [
@@ -15,6 +16,8 @@ export function Sidebar() {
   const backend = state.backend
     ? `后端 ${state.backend.port} · ${state.backend.owned ? "随应用退出" : "已在运行"}`
     : "后端连接中";
+  const pythonPath = state.backend?.python || "";
+  const pythonShort = pythonPath.split("/").filter(Boolean).slice(-2).join("/");
   return (
     <aside className="sidebar">
       <div className="titlebar-drag" aria-hidden="true" />
@@ -31,7 +34,8 @@ export function Sidebar() {
             className={state.view === item.view ? "is-on" : ""}
             onClick={() => inbox.setView(item.view)}
           >
-            {item.label}
+            <NavIcon name={item.view} />
+            <span>{item.label}</span>
           </button>
         ))}
       </nav>
@@ -50,6 +54,11 @@ export function Sidebar() {
         </label>
         <p className="version">v{APP_VERSION} · 仅本机</p>
         <p className="version-sub">{backend}</p>
+        {pythonPath ? (
+          <p className="version-sub interpreter-line" title={pythonPath}>
+            {state.backend?.owned ? "解释器" : "预定解释器"} {pythonShort}
+          </p>
+        ) : null}
       </footer>
     </aside>
   );
