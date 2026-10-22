@@ -1,6 +1,18 @@
-import { useRef, type ReactNode, type RefObject } from "react";
+import { useRef, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useDismissable } from "./dismissable";
 import { useDrawerFocus } from "./focus-trap";
+
+export function PanelScrim({ onClose }: { onClose: () => void }) {
+  return (
+    <button
+      type="button"
+      className="panel-scrim"
+      aria-label="关闭信息栏"
+      onMouseDown={(event: MouseEvent<HTMLButtonElement>) => event.preventDefault()}
+      onClick={onClose}
+    />
+  );
+}
 
 export function InfoDrawerShell({
   layout,
@@ -19,7 +31,7 @@ export function InfoDrawerShell({
 }) {
   const root = useRef<HTMLElement | null>(null);
   const dialog = layout === "drawer" && open;
-  useDismissable(dialog, onClose, root);
+  useDismissable(dialog, onClose, root, "click");
   useDrawerFocus(dialog, root, returnFocus);
   return (
     <aside

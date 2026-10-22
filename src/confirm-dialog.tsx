@@ -1,4 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+
+const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 import type { ConfirmRequest } from "./ui-state";
 
 type Pending = ConfirmRequest & { resolve: (value: boolean) => void };
@@ -43,20 +45,33 @@ export function ConfirmDialogView({
   );
 }
 
+function activeTrigger(): HTMLElement | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return null;
+  if (active === document.body || active === document.documentElement) return null;
+  return active;
+}
+
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const pendingRef = useRef<Pending | null>(null);
+  const returnTo = useRef<HTMLElement | null>(null);
+  const restoreOnClose = useRef<HTMLElement | null>(null);
 
   const settle = useCallback((value: boolean) => {
     const current = pendingRef.current;
+    if (!current) return;
+    restoreOnClose.current = value ? null : returnTo.current;
     pendingRef.current = null;
-    current?.resolve(value);
+    returnTo.current = null;
+    current.resolve(value);
     setPending(null);
   }, []);
 
   const ask = useCallback(
     (request: ConfirmRequest) => {
       const previous = pendingRef.current;
+      if (!previous) returnTo.current = activeTrigger();
       if (previous) previous.resolve(false);
       return new Promise<boolean>((resolve) => {
         const next = { ...request, resolve };
@@ -66,6 +81,13 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  useIsoLayoutEffect(() => {
+    if (pending) return;
+    const back = restoreOnClose.current;
+    restoreOnClose.current = null;
+    if (back?.isConnected) back.focus();
+  }, [pending]);
 
   useEffect(() => {
     if (!pending) return;

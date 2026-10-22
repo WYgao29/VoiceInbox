@@ -9,6 +9,7 @@ import { applyPlaybackRate } from "./playback";
 import { Sidebar } from "./Sidebar";
 import { LoadingSkeleton } from "./skeleton";
 import { MoreIcon } from "./icons";
+import { PanelScrim } from "./info-drawer";
 import { InfoPanel } from "./views/InfoPanel";
 import { Recordings } from "./views/Recordings";
 import { Settings } from "./views/Settings";
@@ -250,9 +251,7 @@ function Shell() {
           {state.ready && state.view === "settings" ? <Settings /> : null}
         </div>
       </div>
-      {panelOpen && narrow ? (
-        <button type="button" className="panel-scrim" aria-label="关闭信息栏" onClick={closePanel} />
-      ) : null}
+      {panelOpen && narrow ? <PanelScrim onClose={closePanel} /> : null}
       <InfoPanel layout={narrow ? "drawer" : "dock"} open={panelOpen} onClose={closePanel} returnFocus={infoButton} />
       {state.notice ? (
         <p className="toast" role="status">

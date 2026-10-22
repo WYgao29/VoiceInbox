@@ -9,6 +9,7 @@ svg = pathlib.Path(sys.argv[1]).read_text()
 svg = svg.replace('width="22"', 'width="1024"', 1).replace('height="22"', 'height="1024"', 1)
 pathlib.Path(sys.argv[2]).write_text(svg)
 PY
+node "$root/scripts/icon-composer.mjs" "$work/icon.svg" "$root/build/icon.icon"
 sips -s format png "$work/icon.svg" --out "$work/icon-1024.png" >/dev/null
 iconset="$work/icon.iconset"
 mkdir -p "$iconset"

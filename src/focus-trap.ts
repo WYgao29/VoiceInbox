@@ -1,4 +1,6 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect, useLayoutEffect, type RefObject } from "react";
+
+const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 const TABBABLE =
   'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -27,7 +29,7 @@ export function useDrawerFocus(
   root: RefObject<HTMLElement | null>,
   returnFocus: RefObject<HTMLElement | null> | undefined,
 ): void {
-  useEffect(() => {
+  useIsoLayoutEffect(() => {
     if (!open) return;
     const el = root.current;
     if (!el) return;
@@ -48,7 +50,8 @@ export function useDrawerFocus(
     document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("keydown", onKey, true);
-      returnFocus?.current?.focus();
+      const back = returnFocus?.current;
+      if (back?.isConnected) back.focus();
     };
   }, [open, root, returnFocus]);
 }
