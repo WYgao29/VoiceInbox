@@ -32,6 +32,39 @@ describe("decideBackend", () => {
     expect(decision).toMatchObject({ action: "spawn", port: 8793, owned: true });
   });
 
+  it("does not choose a fallback before that port has been probed", () => {
+    const decision = decideBackend({
+      requestedPort: null,
+      probes: [{ port: 8791, reachable: true, voiceinbox: false }],
+    });
+    expect(decision.action).toBe("fail");
+  });
+
+  it("does not treat an unprobed default or requested port as free", () => {
+    expect(decideBackend({ requestedPort: null, probes: [] }).action).toBe("fail");
+    expect(decideBackend({ requestedPort: 8792, probes: [] }).action).toBe("fail");
+  });
+
+  it("skips occupied 8791 and 8793 and chooses the confirmed free 8794", () => {
+    const decision = decideBackend({
+      requestedPort: null,
+      probes: [
+        { port: 8791, reachable: true, voiceinbox: false },
+        { port: 8793, reachable: true, voiceinbox: false },
+        { port: 8794, reachable: false, voiceinbox: false },
+      ],
+    });
+    expect(decision).toMatchObject({ action: "spawn", port: 8794, owned: true });
+  });
+
+  it("fails when all probed fallback ports are occupied", () => {
+    const decision = decideBackend({
+      requestedPort: null,
+      probes: [8791, 8793, 8794, 8797, 8798].map((port) => ({ port, reachable: true, voiceinbox: false })),
+    });
+    expect(decision.action).toBe("fail");
+  });
+
   it("spawns a temporary backend on the requested port", () => {
     const decision = decideBackend({
       requestedPort: 8792,

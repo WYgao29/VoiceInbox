@@ -195,11 +195,11 @@ interface InboxApi {
   setDay: (day: string) => void;
   shiftDay: (delta: number) => void;
   setShowDoneTodos: (show: boolean) => void;
-  saveHotwords: (text: string) => Promise<void>;
-  addRule: (wrong: string, right: string, applyTo?: string) => Promise<void>;
+  saveHotwords: (text: string) => Promise<boolean>;
+  addRule: (wrong: string, right: string, applyTo?: string) => Promise<boolean>;
   removeRule: (wrong: string, right: string) => Promise<void>;
-  saveSettings: (body: { since: string; max_per_run: number; language: string }) => Promise<void>;
-  saveFeatures: (body: { llm_enabled: boolean; obsidian_enabled: boolean; digest_enabled: boolean; flash_max_s: number }) => Promise<void>;
+  saveSettings: (body: { since: string; max_per_run: number; language: string }) => Promise<boolean>;
+  saveFeatures: (body: { llm_enabled: boolean; obsidian_enabled: boolean; digest_enabled: boolean; flash_max_s: number }) => Promise<boolean>;
   saveMonitor: (change: { enabled?: boolean; interval_min?: number; watch?: boolean }) => Promise<void>;
   runMonitor: () => Promise<void>;
   refreshSystem: () => Promise<void>;
@@ -268,6 +268,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<InboxState>(() => ({ ...initial, theme: readThemeChoice() }));
   const stateRef = useRef(state);
   const listGen = useRef(0);
+  const todayGen = useRef(0);
   const noticeTimer = useRef(0);
   const queryTimer = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -287,6 +288,16 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     noticeTimer.current = window.setTimeout(() => {
       if (stateRef.current.notice === text) commit((current) => ({ ...current, notice: "" }));
     }, 4200);
+  };
+
+  const saveChange = async (work: () => Promise<void>): Promise<boolean> => {
+    try {
+      await work();
+      return true;
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "没有保存");
+      return false;
+    }
   };
 
   const loadList = async () => {
@@ -322,8 +333,14 @@ export function InboxProvider({ children }: { children: ReactNode }) {
   };
 
   const loadToday = async (day = stateRef.current.day) => {
-    const data = await api<TodayData>(day ? `/api/today?date=${encodeURIComponent(day)}` : "/api/today");
-    commit((current) => ({ ...current, today: data, day: data.date || day }));
+    const gen = ++todayGen.current;
+    try {
+      const data = await api<TodayData>(day ? `/api/today?date=${encodeURIComponent(day)}` : "/api/today");
+      if (gen !== todayGen.current) return;
+      commit((current) => ({ ...current, today: data, day: data.date || day }));
+    } catch (error) {
+      if (gen === todayGen.current) throw error;
+    }
   };
 
   const loadRules = async () => {
@@ -518,12 +535,12 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       void loadToday(next.date).catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     setShowDoneTodos: (show) => commit((current) => ({ ...current, showDoneTodos: show })),
-    saveHotwords: async (text) => {
+    saveHotwords: (text) => saveChange(async () => {
       const payload = await api<{ text?: string }>("/api/hotwords", { method: "POST", json: { text } });
       commit((current) => ({ ...current, hotwordText: payload.text || "" }));
       notify("常用热词已保存，下一次转写起生效");
-    },
-    addRule: async (wrong, right, applyTo) => {
+    }),
+    addRule: (wrong, right, applyTo) => saveChange(async () => {
       const payload = await api<{ message?: string }>("/api/replacements", {
         method: "POST",
         json: applyTo ? { wrong, right, apply_to: applyTo } : { wrong, right },
@@ -534,18 +551,20 @@ export function InboxProvider({ children }: { children: ReactNode }) {
         await select(applyTo, { keep: true });
       }
       notify(payload.message || (applyTo ? "已加入纠错，这条已经更新" : "已添加。以后的录音会自动替换。"));
-    },
+    }),
     removeRule: async (wrong, right) => {
       await runIfConfirmed(
         () => ask(deleteRuleConfirm(wrong, right)),
         async () => {
-          await api("/api/replacements/remove", { method: "POST", json: { wrong } });
-          await loadRules();
-          notify("已删掉。已经替换过的文本要等下次整理，或在命令行跑 vocab apply 才会还原。");
+          await saveChange(async () => {
+            await api("/api/replacements/remove", { method: "POST", json: { wrong } });
+            await loadRules();
+            notify("已删掉。已经替换过的文本要等下次整理，或在命令行跑 vocab apply 才会还原。");
+          });
         },
       );
     },
-    saveSettings: async (body) => {
+    saveSettings: (body) => saveChange(async () => {
       const payload = await api<{ file?: SettingsFile; env_overrides?: string[] }>("/api/settings", { method: "POST", json: body });
       commit((current) => ({
         ...current,
@@ -553,8 +572,8 @@ export function InboxProvider({ children }: { children: ReactNode }) {
         envOverrides: payload.env_overrides || [],
       }));
       notify(payload.env_overrides?.length ? "已保存。这次打开仍被启动参数临时盖过。" : "已保存");
-    },
-    saveFeatures: async (body) => {
+    }),
+    saveFeatures: (body) => saveChange(async () => {
       const payload = await api<FeatureMeta & { file?: FeaturesFile }>("/api/features", { method: "POST", json: body });
       commit((current) => ({
         ...current,
@@ -567,7 +586,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
         },
       }));
       notify("已保存。后台任务下一轮生效。");
-    },
+    }),
     saveMonitor: async (change) => {
       if (stateRef.current.busy) return;
       commit((current) => ({ ...current, busy: true }));

@@ -4,7 +4,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decideBackend, DEFAULT_PORT } from "../shared/backend-plan.js";
+import { decideBackend, DEFAULT_PORT, FALLBACK_PORTS } from "../shared/backend-plan.js";
 import { choosePython, type PythonChoice } from "./python.js";
 import { probeVoiceInbox } from "./probe.js";
 import { isExplainWindowSender } from "./quit.js";
@@ -201,11 +201,10 @@ async function boot(): Promise<void> {
   };
   const probes = [];
   for (const port of requestedPort != null ? [requestedPort] : [DEFAULT_PORT]) probes.push(await probeVoiceInbox(port));
-  let decision = decideBackend({ requestedPort, probes });
-  if (decision.action === "fail" && requestedPort == null && probes[0]?.reachable && !probes[0]?.voiceinbox) {
-    for (const port of [8793, 8794, 8797, 8798]) probes.push(await probeVoiceInbox(port));
-    decision = decideBackend({ requestedPort, probes });
+  if (requestedPort == null && probes[0]?.reachable && !probes[0]?.voiceinbox) {
+    probes.push(...await Promise.all(FALLBACK_PORTS.map((port) => probeVoiceInbox(port))));
   }
+  const decision = decideBackend({ requestedPort, probes });
   if (decision.action === "fail") {
     dialog.showErrorBox("后端没有起来", decision.reason);
     app.quit();

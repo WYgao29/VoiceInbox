@@ -31,6 +31,24 @@ function hostOk(req: IncomingMessage, port: number): boolean {
   return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
 }
 
+function apiOriginOk(req: IncomingMessage, port: number): boolean {
+  const allowed = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+  const origin = req.headers.origin;
+  if (origin !== undefined && !allowed.has(origin)) return false;
+  const method = (req.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD" && !origin) return false;
+  const referer = req.headers.referer;
+  if (referer !== undefined) {
+    try {
+      if (!allowed.has(new URL(referer).origin)) return false;
+    } catch {
+      return false;
+    }
+  }
+  const site = req.headers["sec-fetch-site"];
+  return site === undefined || site === "same-origin" || site === "none";
+}
+
 function fail(res: ServerResponse, code: number, body: string): void {
   if (res.headersSent) return;
   res.writeHead(code, { "Content-Type": "text/plain; charset=utf-8" });
@@ -89,6 +107,10 @@ export function startUiServer(options: UiServerOptions): Promise<{ port: number;
     }
     const pathname = (req.url || "/").split("?")[0] || "/";
     if (pathname.startsWith("/api/")) {
+      if (!apiOriginOk(req, port)) {
+        fail(res, 403, "请从本机应用访问");
+        return;
+      }
       const send = (allowRetry: boolean) => {
         const headers = buildUpstreamHeaders(req.headers, {
           backendPort: options.backendPort,

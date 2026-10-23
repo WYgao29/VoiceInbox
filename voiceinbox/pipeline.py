@@ -573,6 +573,13 @@ def _audio_source(cfg: Config, rec: Record) -> Path | None:
                 return staged
         except OSError:
             pass
+    if rec.archive_path:
+        archive = Path(rec.archive_path)
+        try:
+            if archive.is_file() and archive.stat().st_size > 0:
+                return archive
+        except OSError:
+            pass
     if cfg.failed_dir.exists():
         for candidate in sorted(cfg.failed_dir.glob(f"{rec.id}.*")):
             if candidate.suffix == ".txt" or candidate.name.endswith(".error.txt"):

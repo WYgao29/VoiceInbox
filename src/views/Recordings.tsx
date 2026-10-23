@@ -603,7 +603,8 @@ function Detail() {
                 className="fix-row"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void inbox.addRule(wrong, right, item.id).then(() => {
+                  void inbox.addRule(wrong, right, item.id).then((saved) => {
+                    if (!saved) return;
                     setWrong("");
                     setRight("");
                   });

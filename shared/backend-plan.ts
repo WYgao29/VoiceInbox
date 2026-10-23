@@ -1,6 +1,7 @@
 import type { BackendDecision, Probe } from "./types.js";
 
 export const DEFAULT_PORT = 8791;
+export const FALLBACK_PORTS = [8793, 8794, 8797, 8798];
 export const BLOCKED_PORTS = new Set([8000, 8765]);
 
 function usable(port: number): boolean {
@@ -30,8 +31,8 @@ export function decideBackend(input: {
         reason: "指定端口上已有 voiceinbox，退出时不关闭",
       };
     }
-    if (probe?.reachable) {
-      return { action: "fail", port: requested, owned: false, reason: "指定端口被其他程序占用" };
+    if (probe?.reachable !== false) {
+      return { action: "fail", port: requested, owned: false, reason: "指定端口被其他程序占用或无法确认空闲" };
     }
     return { action: "spawn", port: requested, owned: true, reason: "在指定端口启动临时后端" };
   }
@@ -45,11 +46,14 @@ export function decideBackend(input: {
       reason: "复用 8791 上已有的 voiceinbox，退出时不关闭",
     };
   }
-  if (!main?.reachable) {
+  if (!main) {
+    return { action: "fail", port: DEFAULT_PORT, owned: false, reason: "尚未确认 8791 是否空闲" };
+  }
+  if (main.reachable === false) {
     return { action: "spawn", port: DEFAULT_PORT, owned: true, reason: "8791 空闲，由本程序启动后端" };
   }
-  const fallbacks = input.fallbackPorts ?? [8793, 8794, 8797, 8798];
-  const free = fallbacks.find((port) => usable(port) && !findProbe(input.probes, port)?.reachable);
+  const fallbacks = input.fallbackPorts ?? FALLBACK_PORTS;
+  const free = fallbacks.find((port) => usable(port) && findProbe(input.probes, port)?.reachable === false);
   if (free == null) {
     return { action: "fail", port: DEFAULT_PORT, owned: false, reason: "8791 被占用，且没有空闲备用端口" };
   }

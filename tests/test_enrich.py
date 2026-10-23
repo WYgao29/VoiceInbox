@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from voiceinbox import enrich, obsidian, search, vocab
-from voiceinbox.llm import LlmUnavailable, parse_json_object, strip_think
+from voiceinbox.llm import LlmError, LlmUnavailable, parse_json_object, strip_think
 from voiceinbox.state import State
 from tests.conftest import make_cfg
 
@@ -140,6 +140,39 @@ def test_llm_unavailable_keeps_waiting_without_burning_attempts(tmp_path: Path):
     assert enrich.needs_work(cfg, state.get(rec.id))
     enrich.enrich_pending(cfg, state, box=enrich.ClientBox(cfg, factory=FakeClient))
     assert 'status: "已总结"' in note.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("duration", [30, 600], ids=["flash", "full"])
+@pytest.mark.parametrize("failure", [LlmUnavailable, LlmError])
+def test_failed_regeneration_preserves_existing_outputs(tmp_path: Path, monkeypatch, duration, failure):
+    cfg, _vault = _setup(tmp_path, digest_enabled=False)
+    state = State(cfg.db_path)
+    rec = _add(cfg, state, "f", "我们讨论项目，周五发纪要。", duration, "2026-10-23T10:00:00+08:00")
+    enrich.enrich_record(cfg, rec, enrich.ClientBox(cfg, factory=FakeClient))
+    analysis = enrich.read_analysis(cfg, rec.id)
+    note = Path(analysis.get("obsidian_path") or analysis["daily_path"])
+    files = [enrich.analysis_path(cfg, rec.id), enrich.corrected_path(cfg, rec.id), note]
+    if duration == 600:
+        files.append(enrich.summary_path(cfg, rec.id))
+    before = {path: path.read_bytes() for path in files}
+    row_before = enrich.get_row(cfg, rec.id)
+    # 新纠错规则也不能在失败的重新总结中提前替换已有产物。
+    vocab.add_replacement(cfg, "讨论", "商量")
+
+    class Broken(FakeClient):
+        def prepare(self):
+            if failure is LlmUnavailable:
+                raise failure("isolated model failure")
+
+        def chat_json(self, *_args, **_kwargs):
+            raise failure("isolated model failure")
+
+    box = enrich.ClientBox(cfg, factory=Broken)
+    monkeypatch.setattr(enrich, "ClientBox", lambda _cfg: box)
+    with pytest.raises(LlmError, match="isolated model failure"):
+        enrich.regenerate(cfg, rec.id)
+    assert {path: path.read_bytes() for path in files} == before
+    assert enrich.get_row(cfg, rec.id) == row_before
 
 
 def test_reapply_corrections_without_llm(tmp_path: Path):

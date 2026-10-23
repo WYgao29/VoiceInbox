@@ -313,7 +313,7 @@ def enrich_record(
     if raw is None or not raw.strip():
         raise RuntimeError("没有原始转写")
     raw_sha = _sha(raw)
-    corrected = apply_corrections(cfg, rec.id, raw)
+    corrected = vocab.apply_replacements(raw, vocab.read_replacements(cfg))
     route = route_of(cfg, rec)
     previous = read_analysis(cfg, rec.id)
     row = get_row(cfg, rec.id) or {}
@@ -355,6 +355,11 @@ def enrich_record(
         except LlmError as exc:
             llm_error = str(exc)
             LOG.error("本机总结失败 %s：%s", rec.id, exc)
+    # 手动重新总结失败时保留已有产物，只有拿到新结果才开始替换。
+    if force_llm and llm_error:
+        raise LlmError(llm_error)
+    if read_corrected(cfg, rec.id) != corrected:
+        _atomic(corrected_path(cfg, rec.id), corrected)
     summary_md = ""
     if analysis.get("llm") and analysis.get("route") == "full" and analysis.get("summary"):
         summary_md = summarize.render_summary_md(analysis["summary"], analysis.get("template") or analysis.get("type") or "其他")

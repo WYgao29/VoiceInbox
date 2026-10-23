@@ -55,7 +55,8 @@ export function Vocab() {
             const left = wrong.trim();
             const next = right.trim();
             if (!left || !next || inbox.state.busy) return;
-            void inbox.addRule(left, next).then(() => {
+            void inbox.addRule(left, next).then((saved) => {
+              if (!saved) return;
               setWrong("");
               setRight("");
             });

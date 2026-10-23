@@ -39,6 +39,7 @@ from voiceinbox.pipeline import (
     retry_statuses,
 )
 from voiceinbox.state import Record, State
+from voiceinbox.proc import install_signal_handlers
 from voiceinbox import enrich, search, todos, vocab
 from voiceinbox.monitor import Monitor
 from voiceinbox.llm import LlmError
@@ -1859,6 +1860,7 @@ class Handler(BaseHTTPRequestHandler):
 def build_server(app: WebApp, host: str = DEFAULT_HOST, port: int = 0) -> WebServer:
     if host != DEFAULT_HOST:
         raise ValueError("只允许绑定 127.0.0.1")
+    install_signal_handlers()
     server = WebServer((host, port), Handler)
     server.app = app  # type: ignore[attr-defined]
     return server

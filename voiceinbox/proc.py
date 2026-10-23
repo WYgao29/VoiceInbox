@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
 
 from voiceinbox.log import LOG
 
@@ -29,9 +30,10 @@ def _on_signal(signum: int, _frame) -> None:
     raise SystemExit(128 + signum)
 
 
-def _install_signals() -> None:
+def install_signal_handlers() -> None:
+    """由主线程注册退出处理；请求线程只运行子进程。"""
     global _SIGNALS_READY
-    if _SIGNALS_READY:
+    if _SIGNALS_READY or threading.current_thread() is not threading.main_thread():
         return
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
@@ -44,7 +46,7 @@ def run_cmd(
     timeout_s: float,
     env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
-    _install_signals()
+    install_signal_handlers()
     LOG.info("运行 %s", " ".join(cmd))
     proc = subprocess.Popen(
         cmd,

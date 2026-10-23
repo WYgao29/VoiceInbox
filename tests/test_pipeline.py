@@ -249,6 +249,25 @@ def test_retranscribe_passes_hints_and_leaves_audio(tmp_path: Path, monkeypatch)
     assert audio.read_bytes() == original_bytes
 
 
+def test_retranscribe_uses_archive_when_original_is_gone(tmp_path: Path):
+    cfg = make_cfg(tmp_path, min_duration_s=0)
+    original = make_m4a(cfg.inbox_dir / "clip.m4a", 1)
+    run_once(cfg, transcribe_fn=_fake_ok("第一遍"))
+    rec = State(cfg.db_path).recent(1)[0]
+    archive = Path(rec.archive_path)
+    archived_bytes = archive.read_bytes()
+    assert not Path(rec.staged_path).exists()
+    original.unlink()
+
+    stats, done = retranscribe(cfg, rec.id, transcribe_fn=_fake_ok("归档重转成功"))
+
+    assert stats.transcribed == 1 and stats.failed == 0
+    assert done.status == "transcribed"
+    assert Path(done.text_path).read_text(encoding="utf-8").strip() == "归档重转成功"
+    assert done.archive_path == rec.archive_path
+    assert archive.read_bytes() == archived_bytes
+
+
 def test_retranscribe_failure_restores_text_and_lock_blocks(tmp_path: Path, monkeypatch):
     cfg = make_cfg(tmp_path, min_duration_s=0)
     make_m4a(cfg.inbox_dir / "clip.m4a", 1)
