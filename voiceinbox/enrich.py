@@ -455,6 +455,9 @@ def enrich_pending(cfg: Config, state: State, *, box: ClientBox | None = None, l
                 stats.waiting_llm += 1
             if result.get("obsidian_path") or result.get("daily_path"):
                 stats.exported += 1
+        from voiceinbox.digest_queue import process_pending_locked
+
+        stats.digests += process_pending_locked(cfg, state, box=box)
         stats.digests += maybe_digest(cfg, state, box)
     finally:
         if own:
@@ -559,12 +562,10 @@ def day_items(cfg: Config, state: State, day: str) -> list[dict]:
         if _day_of(rec) != day:
             continue
         analysis = read_analysis(cfg, rec.id)
-        if not analysis:
-            continue
         when = datetime.fromisoformat(rec.recorded_at)  # type: ignore[arg-type]
         brief = ((analysis.get("summary") or {}).get("overview") or (analysis.get("flash") or {}).get("note") or "")
         if not brief:
-            brief = (read_corrected(cfg, rec.id) or "")[:200]
+            brief = (read_corrected(cfg, rec.id) or read_raw(cfg, rec.id) or "")[:200]
         todos = ((analysis.get("summary") or {}).get("todos") or []) + ((analysis.get("flash") or {}).get("todos") or [])
         if todos:
             brief = brief + " 待办：" + "；".join(todos[:10])
@@ -581,11 +582,11 @@ def day_items(cfg: Config, state: State, day: str) -> list[dict]:
                 "id": rec.id,
                 "time": f"{when:%H:%M}",
                 "type": analysis.get("type") or "",
-                "title": analysis.get("title") or "",
+                "title": analysis.get("title") or rec.apple_title or _fallback_title(brief),
                 "brief": " ".join(brief.split())[:800],
                 "duration_label": _format_duration(rec.duration_s),
                 "note_link": link,
-                "sha": analysis.get("raw_sha") or "",
+                "sha": analysis.get("raw_sha") or _sha(read_raw(cfg, rec.id) or ""),
                 "llm": bool(analysis.get("llm")),
             }
         )
@@ -597,6 +598,13 @@ def _signature(items: list[dict]) -> str:
 
 
 def run_digest(cfg: Config, state: State, box: ClientBox, day: str, *, force: bool = False) -> Path | None:
+    from voiceinbox import digest_queue
+
+    digest_queue._valid_day(day)
+    if digest_queue._deletions_for_day(state, day):
+        raise LlmUnavailable("录音删除尚未完成，完成后会重建摘要")
+    if digest_queue._row(cfg, day):
+        digest_queue.invalidate_day_locked(cfg, state, day)
     items = day_items(cfg, state, day)
     if not items:
         return None
@@ -611,11 +619,13 @@ def run_digest(cfg: Config, state: State, box: ClientBox, day: str, *, force: bo
     digest = summarize.summarize_day(client, day, items)
     path = obsidian.write_digest(cfg, day, digest, items)
     with _db(cfg) as conn:
+        digest_queue._ensure_schema(conn)
         conn.execute(
             "INSERT INTO digests (day, signature, path, updated_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(day) DO UPDATE SET signature = excluded.signature, path = excluded.path, updated_at = excluded.updated_at",
             (day, signature, str(path), datetime.now().astimezone().isoformat(timespec="seconds")),
         )
+        conn.execute("DELETE FROM pending_digests WHERE day = ?", (day,))
     LOG.info("当日摘要已写入 %s", path)
     return path
 
@@ -633,8 +643,13 @@ def maybe_digest(cfg: Config, state: State, box: ClientBox) -> int:
     if not (cfg.digest_enabled and cfg.llm_enabled and cfg.obsidian_enabled):
         return 0
     done = 0
+    from voiceinbox.digest_queue import pending_days
+
+    queued = set(pending_days(cfg))
     moment = now_in(cfg.timezone)
     for day in digest_days_due(cfg, moment):
+        if day in queued:
+            continue
         try:
             if run_digest(cfg, state, box, day):
                 done += 1
@@ -651,6 +666,12 @@ def digest_now(cfg: Config, day: str) -> Path | None:
         box = ClientBox(cfg)
         try:
             return run_digest(cfg, state, box, day, force=True)
+        except Exception as exc:
+            from voiceinbox import digest_queue
+
+            if digest_queue._row(cfg, day) is not None:
+                digest_queue._failed(cfg, day, exc)
+            raise
         finally:
             box.close()
 

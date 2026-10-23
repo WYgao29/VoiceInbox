@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { DetailTab, Facets, Recording, Rule, ThemeChoice, ViewName } from "../shared/types.js";
-import { visibleDetailTabs } from "../shared/text.js";
+import { recordingTitle, visibleDetailTabs } from "../shared/text.js";
 import { api, desktopBackend, uploadFile } from "./api";
 import { destinationFromHash } from "./hash-view";
 import { applyPlaybackRate } from "./playback";
@@ -9,6 +9,7 @@ import { useConfirm, useDismissConfirm } from "./confirm-dialog";
 import { applyTheme, readThemeChoice } from "./theme";
 import {
   deleteRuleConfirm,
+  deleteRecordingsConfirm,
   digestConfirm,
   importConfirm,
   retranscribeConfirm,
@@ -32,7 +33,7 @@ export interface TodayTodo {
 export interface TodayData {
   date: string;
   is_today?: boolean;
-  digest?: { md?: string; path?: string; uri?: string; updated?: string };
+  digest?: { md?: string; path?: string; uri?: string; updated?: string; state?: "none" | "pending" | "failed" | "ready"; error?: string };
   digest_ready?: boolean;
   digest_time?: string;
   items?: Recording[];
@@ -101,6 +102,9 @@ export interface InboxState {
   facets: Facets;
   counts: Record<string, number>;
   selectedId: string;
+  selecting: boolean;
+  checkedIds: string[];
+  deleteErrors: { id: string; title: string; error: string }[];
   detail: Recording | null;
   tab: DetailTab;
   seek: number | null;
@@ -144,6 +148,9 @@ const initial: InboxState = {
   facets: {},
   counts: {},
   selectedId: "",
+  selecting: false,
+  checkedIds: [],
+  deleteErrors: [],
   detail: null,
   tab: "summary",
   seek: null,
@@ -187,6 +194,10 @@ interface InboxApi {
   clearDates: () => void;
   clearBrowse: () => void;
   select: (id: string, options?: { keep?: boolean; seek?: number | null }) => Promise<void>;
+  setSelecting: (selecting: boolean) => void;
+  toggleRecordingSelection: (id: string) => void;
+  selectAllRecordings: (checked: boolean) => void;
+  deleteRecordings: (ids: string[]) => Promise<void>;
   setTab: (tab: DetailTab) => void;
   setShowRaw: (showRaw: boolean) => void;
   setRate: (rate: number) => void;
@@ -269,6 +280,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state);
   const listGen = useRef(0);
   const todayGen = useRef(0);
+  const detailGen = useRef(0);
   const noticeTimer = useRef(0);
   const queryTimer = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -304,20 +316,25 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     const gen = ++listGen.current;
     const data = await api<{ items?: Recording[]; facets?: Facets; counts?: Record<string, number> }>(listQuery(stateRef.current));
     if (gen !== listGen.current) return data;
-    commit((current) => ({
-      ...current,
-      items: data.items || [],
-      facets: data.facets || {},
-      counts: data.counts || {},
-    }));
+    commit((current) => {
+      const retained = new Set([...(data.items || []).map((item) => item.id), ...current.deleteErrors.map((failure) => failure.id)]);
+      return {
+        ...current,
+        items: data.items || [],
+        facets: data.facets || {},
+        counts: data.counts || {},
+        checkedIds: current.checkedIds.filter((id) => retained.has(id)),
+      };
+    });
     return data;
   };
 
   const select = async (id: string, options?: { keep?: boolean; seek?: number | null }) => {
+    const gen = ++detailGen.current;
     const keep = Boolean(options?.keep && stateRef.current.detail?.id === id);
     commit((current) => ({ ...current, selectedId: id }));
     const data = await api<{ item: Recording }>(`/api/recordings/${id}`);
-    if (stateRef.current.selectedId !== id) return;
+    if (gen !== detailGen.current || stateRef.current.selectedId !== id) return;
     commit((current) => {
       const visible = visibleDetailTabs(data.item);
       const preferred = keep ? current.tab : data.item.analysis ? "summary" : "text";
@@ -330,6 +347,123 @@ export function InboxProvider({ children }: { children: ReactNode }) {
         seek: options && "seek" in options ? options.seek ?? null : keep ? current.seek : data.item.hit_at ?? null,
       };
     });
+  };
+
+  const deletionPending = (id: string) => Boolean(
+    (stateRef.current.detail?.id === id && stateRef.current.detail.deletion_pending)
+      || stateRef.current.items.find((item) => item.id === id)?.deletion_pending,
+  );
+
+  const deleteRecordings = async (requested: string[]) => {
+    const ids = Array.from(new Set(requested));
+    if (!ids.length || stateRef.current.busy) return;
+    const before = stateRef.current;
+    const known = new Map(before.items.map((item) => [item.id, item]));
+    if (before.detail) known.set(before.detail.id, before.detail);
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (!(await ask(deleteRecordingsConfirm(ids.length, ids.length === 1 ? recordingTitle(known.get(ids[0])) : undefined)))) return;
+    if (stateRef.current.busy) {
+      notify("另一项操作正在进行，请稍后重试删除。");
+      return;
+    }
+    const order = orderedIds(stateRef.current.items);
+    let focusId: string | null = null;
+    commit((current) => ({ ...current, busy: true, deleteErrors: [] }));
+    try {
+      if (stateRef.current.detail && ids.includes(stateRef.current.detail.id)) audioRef.current?.pause();
+      const payload = await api<{
+        ok: boolean;
+        deleted_ids: string[];
+        failed: { id: string; error: string }[];
+        digest_days: string[];
+      }>("/api/recordings/delete", { method: "POST", json: { ids } });
+      const deleted = new Set(payload.deleted_ids);
+      const failures = payload.failed.map((failure) => ({
+        ...failure,
+        title: recordingTitle(known.get(failure.id)) || failure.id,
+      }));
+      // Invalidate reads started before deletion, so they cannot restore removed data.
+      listGen.current += 1;
+      todayGen.current += 1;
+      detailGen.current += 1;
+      commit((current) => {
+        const selectedDeleted = deleted.has(current.selectedId);
+        const today = current.today;
+        const failed = new Map(failures.map((failure) => [failure.id, failure.error]));
+        const affected = new Set([...deleted, ...failed.keys()]);
+        const remainingTodayItems = today?.items?.filter((item) => !affected.has(item.id));
+        const affectsShownDay = today && (
+          payload.digest_days.includes(today.date)
+          || today.items?.some((item) => affected.has(item.id))
+          || [...affected].some((id) => known.get(id)?.recorded_at?.slice(0, 10) === today.date)
+        );
+        const hidePendingContent = (item: Recording): Recording => failed.has(item.id) ? {
+          ...item,
+          deletion_pending: true,
+          group: "failed",
+          status_label: "删除未完成",
+          reason: failed.get(item.id),
+          has_audio: false,
+          has_text: false,
+          text: "",
+          raw_text: "",
+          brief: "",
+          preview: "",
+          analysis: null,
+        } : item;
+        return {
+          ...current,
+          items: current.items.filter((item) => !deleted.has(item.id)).map(hidePendingContent),
+          selectedId: selectedDeleted ? "" : current.selectedId,
+          detail: selectedDeleted ? null : current.detail ? hidePendingContent(current.detail) : null,
+          seek: selectedDeleted ? null : current.seek,
+          checkedIds: current.checkedIds.filter((id) => !deleted.has(id)),
+          deleteErrors: failures,
+          today: today ? {
+            ...today,
+            items: remainingTodayItems,
+            todos: today.todos?.filter((todo) => !affected.has(todo.id)),
+            digest: affectsShownDay
+              ? { state: payload.digest_days.includes(today.date) || remainingTodayItems?.length || failures.length || !today.items ? "pending" : "none", md: "" }
+              : today.digest,
+          } : null,
+        };
+      });
+      const selectedBeforeRefresh = stateRef.current.selectedId;
+      const results = await Promise.allSettled([loadList(), loadToday()]);
+      if (results.some((result) => result.status === "rejected")) {
+        notify("删除结果已保存，部分页面没有刷新，请稍后重试刷新。");
+      } else {
+        notify(failures.length ? `已删除 ${deleted.size} 条，${failures.length} 条未完成，可重试删除。` : `已删除 ${deleted.size} 条录音。`);
+      }
+      const current = stateRef.current;
+      if (!current.selectedId && !selectedBeforeRefresh) {
+        const previousId = before.selectedId;
+        const index = order.indexOf(previousId);
+        const remaining = new Set(current.items.map((item) => item.id));
+        const nearby = index >= 0 ? [...order.slice(index + 1), ...order.slice(0, index).reverse()] : order;
+        const next = nearby.find((id) => remaining.has(id)) || current.items[0]?.id;
+        if (next) {
+          await select(next);
+          focusId = next;
+        } else focusId = "";
+      } else if (current.selectedId && (ids.includes(current.selectedId) || deleted.size > 0)) {
+        await select(current.selectedId, { keep: true });
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "没有删除，请稍后重试。");
+    } finally {
+      commit((current) => ({ ...current, busy: false }));
+      window.setTimeout(() => {
+        if (stateRef.current.view !== "recordings") return;
+        if (focusId !== null) {
+          const target = focusId
+            ? document.querySelector<HTMLElement>(`.rec-card[data-id="${focusId}"]`)
+            : document.getElementById("recordings-list-heading");
+          target?.focus();
+        } else if (trigger?.isConnected) trigger.focus();
+      }, 0);
+    }
   };
 
   const loadToday = async (day = stateRef.current.day) => {
@@ -431,38 +565,38 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       commit((current) => ({ ...current, theme }));
     },
     setQuery: (query) => {
-      commit((current) => ({ ...current, query, view: "recordings" }));
+      commit((current) => ({ ...current, query, view: "recordings", checkedIds: [] }));
       window.clearTimeout(queryTimer.current);
       queryTimer.current = window.setTimeout(() => {
         void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
       }, 200);
     },
     setStatus: (status) => {
-      commit((current) => ({ ...current, status }));
+      commit((current) => ({ ...current, status, checkedIds: [] }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     setKind: (kind) => {
-      commit((current) => ({ ...current, kind, scene: kind === "flash" ? "" : current.scene }));
+      commit((current) => ({ ...current, kind, scene: kind === "flash" ? "" : current.scene, checkedIds: [] }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     setScene: (scene) => {
-      commit((current) => ({ ...current, scene: current.scene === scene ? "" : scene }));
+      commit((current) => ({ ...current, scene: current.scene === scene ? "" : scene, checkedIds: [] }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     setTag: (tag) => {
-      commit((current) => ({ ...current, tag: current.tag === tag ? "" : tag, view: "recordings" }));
+      commit((current) => ({ ...current, tag: current.tag === tag ? "" : tag, view: "recordings", checkedIds: [] }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     setFrom: (from) => {
-      commit((current) => ({ ...current, from }));
+      commit((current) => ({ ...current, from, checkedIds: [] }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     setTo: (to) => {
-      commit((current) => ({ ...current, to }));
+      commit((current) => ({ ...current, to, checkedIds: [] }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     clearDates: () => {
-      commit((current) => ({ ...current, from: "", to: "" }));
+      commit((current) => ({ ...current, from: "", to: "", checkedIds: [] }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     clearBrowse: () => {
@@ -476,10 +610,25 @@ export function InboxProvider({ children }: { children: ReactNode }) {
         to: "",
         status: "all",
         view: "recordings",
+        checkedIds: [],
       }));
       void loadList().catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     select,
+    deleteRecordings,
+    setSelecting: (selecting) => commit((current) => ({ ...current, selecting, checkedIds: [] })),
+    toggleRecordingSelection: (id) => {
+      if (stateRef.current.busy || !stateRef.current.items.some((item) => item.id === id)) return;
+      commit((current) => ({ ...current, checkedIds: current.checkedIds.includes(id)
+        ? current.checkedIds.filter((selected) => selected !== id) : [...current.checkedIds, id] }));
+    },
+    selectAllRecordings: (checked) => {
+      if (stateRef.current.busy) return;
+      const visible = new Set(stateRef.current.items.map((item) => item.id));
+      commit((current) => ({ ...current, checkedIds: checked
+        ? Array.from(new Set([...current.checkedIds, ...visible]))
+        : current.checkedIds.filter((id) => !visible.has(id)) }));
+    },
     setTab: (tab) => commit((current) => ({ ...current, tab })),
     setShowRaw: (showRaw) => commit((current) => ({ ...current, showRaw })),
     setRate: (rate) => {
@@ -674,6 +823,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       }
     },
     retryOne: async (id) => {
+      if (deletionPending(id)) return;
       await runIfConfirmed(() => ask(retryOneConfirm()), () =>
         runJob(async () => {
           await api(`/api/recordings/${id}/retry`, { method: "POST" });
@@ -688,6 +838,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       );
     },
     retranscribe: async (id, context, hotwords) => {
+      if (deletionPending(id)) return;
       await runIfConfirmed(() => ask(retranscribeConfirm()), () =>
         runJob(async () => {
           await api(`/api/recordings/${id}/retranscribe`, { method: "POST", json: { context, hotwords } });
@@ -695,6 +846,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       );
     },
     summarize: async (id, template) => {
+      if (deletionPending(id)) return;
       await runIfConfirmed(() => ask(summarizeConfirm()), () =>
         runJob(async () => {
           await api(`/api/recordings/${id}/summarize`, { method: "POST", json: { template } });
@@ -748,6 +900,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     const activityTimer = window.setInterval(() => {
       if (document.hidden) return;
       void loadActivity().catch(() => undefined);
+      if (stateRef.current.view === "today" && !stateRef.current.busy) void loadToday().catch(() => undefined);
       monitorTick += 1;
       if (stateRef.current.view === "settings" || monitorTick % 6 === 0) void loadMonitor().catch(() => undefined);
     }, 5000);

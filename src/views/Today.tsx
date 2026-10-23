@@ -19,7 +19,10 @@ export function Today() {
   const days = dayChoices(today);
   const index = days.findIndex((day) => day.date === today.date);
   const digest = today.digest;
-  const md = (digest?.md || "").replace(/^## 概要\n/, "");
+  const digestState = digest?.state || (digest?.md ? "ready" : "none");
+  const ready = digestState === "ready";
+  const rebuilding = digestState === "pending" || digestState === "failed";
+  const md = (ready ? digest?.md || "" : "").replace(/^## 概要\n/, "");
   const items = (today.items || []).slice().reverse();
   return (
     <div className="today-view">
@@ -50,29 +53,34 @@ export function Today() {
           </button>
         </div>
       </div>
-      {digest?.md || items.length ? (
+      {md || items.length || rebuilding ? (
         <article className="panel">
           <div className="panel-head">
             <h3>摘要</h3>
             <div className="bulk">
-              {digest?.uri ? (
+              {ready && digest?.uri ? (
                 <button type="button" className="secondary" onClick={() => openObsidian(digest.uri || "")}>
                   在 Obsidian 打开
                 </button>
               ) : null}
-              {today.digest_ready && items.length ? (
+              {(today.digest_ready && items.length) || rebuilding ? (
                 <button type="button" className="primary" disabled={inbox.state.busy} onClick={() => void inbox.digest(today.date)}>
-                  {digest?.md ? "重新生成" : "生成摘要"}
+                  {rebuilding ? "重试生成" : md ? "重新生成" : "生成摘要"}
                 </button>
               ) : null}
             </div>
           </div>
-          {digest?.md ? (
+          {md ? (
             <MarkdownView text={md} skip={["待办", "当天的录音"]} />
+          ) : rebuilding ? (
+            <div className="digest-status" role="status">
+              <p>{digestState === "failed" ? "摘要重新生成失败。" : "摘要等待重新生成，完成后会自动更新。"}</p>
+              {digest?.error ? <p>{digest.error}</p> : null}
+            </div>
           ) : (
             <p className="empty">{`这天还没有当日摘要。每天 ${today.digest_time || ""} 之后会自动生成，也可以现在生成。`}</p>
           )}
-          {digest?.md ? <p className="foot">更新于 {digest.updated} · {digest.path}</p> : null}
+          {md ? <p className="foot">更新于 {digest?.updated} · {digest?.path}</p> : null}
         </article>
       ) : null}
       <section className="panel">

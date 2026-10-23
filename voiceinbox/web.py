@@ -40,7 +40,8 @@ from voiceinbox.pipeline import (
 )
 from voiceinbox.state import Record, State
 from voiceinbox.proc import install_signal_handlers
-from voiceinbox import enrich, search, todos, vocab
+from voiceinbox.lock import FileLock
+from voiceinbox import deletion, digest_queue, enrich, search, todos, vocab
 from voiceinbox.monitor import Monitor
 from voiceinbox.llm import LlmError
 from voiceinbox.summarize import SCENES, TEMPLATES
@@ -69,11 +70,12 @@ GROUPS = (
     ("pending", "排队中", frozenset({"discovered", "stable", "converted"})),
     ("processing", "转写中", frozenset({"processing"})),
     ("done", "已转写", frozenset({"transcribed"})),
-    ("failed", "失败", frozenset({"failed", "dead"})),
+    ("failed", "失败", frozenset({"failed", "dead", "deleting", "delete_failed"})),
     ("skipped", "太短已跳过", frozenset({"skipped"})),
 )
 _GROUP_OF = {name: key for key, _label, names in GROUPS for name in names}
 _LABEL_OF = {name: label for _key, label, names in GROUPS for name in names}
+_LABEL_OF.update({"deleting": "删除未完成", "delete_failed": "删除未完成"})
 _RAW_STATUS = set(_GROUP_OF)
 _GROUP_NAMES = {key for key, _label, _names in GROUPS}
 
@@ -622,7 +624,8 @@ def public_record(
     hit: dict | None = None,
     done: dict[str, str] | None = None,
 ) -> dict[str, object]:
-    raw_text = transcript_text(cfg, rec)
+    deletion_pending = rec.status in {"deleting", "delete_failed"}
+    raw_text = None if deletion_pending else transcript_text(cfg, rec)
     corrected = enrich.read_corrected(cfg, rec.id) if raw_text is not None else None
     text = corrected if corrected is not None else raw_text
     analysis = enrich.read_analysis(cfg, rec.id) if rec.status == "transcribed" else {}
@@ -639,6 +642,7 @@ def public_record(
     shown = display_title(rec, text, analysis)
     item: dict[str, object] = {
         "id": rec.id,
+        "deletion_pending": deletion_pending,
         "raw_status": rec.status,
         "status_label": label_of(rec.status),
         "group": group_of(rec.status),
@@ -655,7 +659,7 @@ def public_record(
         "duration_label": format_duration(rec.duration_s),
         "attempts": rec.attempts,
         "last_error": rec.last_error or "",
-        "reason": human_error(rec.status, rec.last_error),
+        "reason": ("删除未完成。" + _plain_reason(rec.last_error or "请重试删除")) if deletion_pending else human_error(rec.status, rec.last_error),
         "next_retry_at": format_when(rec.next_retry_at) if rec.next_retry_at else "",
         "preview": preview,
         "updated_at": format_when(rec.updated_at),
@@ -680,7 +684,7 @@ def public_record(
         item["hit_at"] = at
         item["hit_at_label"] = format_duration(at) if at is not None else ""
     if with_detail:
-        found = find_audio(cfg, rec)
+        found = None if deletion_pending else find_audio(cfg, rec)
         item["text"] = text or ""
         item["raw_text"] = raw_text or ""
         item["corrected_differs"] = corrected is not None and raw_text is not None and corrected != raw_text
@@ -995,6 +999,10 @@ class WebApp:
         if not _TOKEN_RE.fullmatch(self.csrf_token):
             raise RuntimeError("CSRF token 异常")
         self._mu = threading.Lock()
+        self._maintenance_mu = threading.Lock()
+        self._maintenance_thread: threading.Thread | None = None
+        self._maintenance_requested = False
+        self._maintenance_stop = threading.Event()
         self._doctor_cache: tuple[float, tuple[int, str]] | None = None
         self._cfg = load_config(self.config_path)
         ensure_dirs(self._cfg)
@@ -1003,7 +1011,9 @@ class WebApp:
             kwargs["runner"] = monitor_runner
         self.monitor = Monitor(self.config_path, self._cfg.lock_path, self._cfg.logs_dir, self._cfg.backup_dir / "launchd", **kwargs)
         try:
-            enrich.sync_index(self._cfg, State(self._cfg.db_path))
+            with FileLock(self._cfg.lock_path) as acquired:
+                if acquired:
+                    enrich.sync_index(self._cfg, State(self._cfg.db_path))
         except Exception:
             LOG.exception("补搜索索引失败")
 
@@ -1017,7 +1027,53 @@ class WebApp:
         with self._mu:
             self._cfg = cfg
             self._doctor_cache = None
+        self.kick_maintenance()
         return cfg
+
+    def kick_maintenance(self) -> None:
+        """恢复持久任务；HTTP 响应无需等待模型。锁忙时等待当前流水线结束。"""
+        cfg = self.cfg
+        if not State(cfg.db_path).pending_deletions() and not digest_queue.pending_days(cfg):
+            return
+        with self._maintenance_mu:
+            if self._maintenance_stop.is_set():
+                return
+            self._maintenance_requested = True
+            if self._maintenance_thread is not None:
+                return
+            self._maintenance_thread = threading.Thread(target=self._maintain, name="voiceinbox-maintenance", daemon=True)
+            self._maintenance_thread.start()
+
+    def _maintain(self) -> None:
+        while not self._maintenance_stop.is_set():
+            with self._maintenance_mu:
+                self._maintenance_requested = False
+            cfg = self.cfg
+            try:
+                with FileLock(cfg.lock_path) as acquired:
+                    if not acquired:
+                        if self._maintenance_stop.wait(0.25):
+                            break
+                        continue
+                    state = State(cfg.db_path)
+                    deletion.resume_deletions_locked(cfg, state)
+                    digest_queue.process_pending_locked(cfg, state)
+            except Exception:
+                LOG.exception("恢复删除或摘要任务失败，保留任务供下次重试")
+            with self._maintenance_mu:
+                if self._maintenance_requested:
+                    continue
+                self._maintenance_thread = None
+                return
+        with self._maintenance_mu:
+            self._maintenance_thread = None
+
+    def close(self) -> None:
+        self._maintenance_stop.set()
+        with self._maintenance_mu:
+            thread = self._maintenance_thread
+        if thread is not None:
+            thread.join(timeout=1)
 
     def doctor_result(self) -> tuple[int, str]:
         now = time.monotonic()
@@ -1038,6 +1094,12 @@ class WebApp:
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def server_close(self) -> None:
+        app = getattr(self, "app", None)
+        if app is not None:
+            app.close()
+        super().server_close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1143,6 +1205,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if route == "/api/retry":
             self._retry_many()
+            return
+        if route == "/api/recordings/delete":
+            self._delete_recordings()
             return
         if route == "/api/settings":
             self._settings_post()
@@ -1339,6 +1404,7 @@ class Handler(BaseHTTPRequestHandler):
         if tag:
             chosen = [rec for rec in chosen if tag in ((analyses.get(rec.id) or {}).get("tags") or [])]
         if text.strip():
+            chosen = [rec for rec in chosen if rec.status not in {"deleting", "delete_failed"}]
             plain = {rec.id for rec in filter_records(cfg, chosen, status="all", query=text)}
             chosen = [rec for rec in chosen if rec.id in hits or rec.id in plain]
             order = {rec_id: index for index, rec_id in enumerate(hits)}
@@ -1374,6 +1440,9 @@ class Handler(BaseHTTPRequestHandler):
         rec = State(cfg.db_path).get(rec_id)
         if rec is None:
             raise KeyError(rec_id)
+        if rec.status in {"deleting", "delete_failed"}:
+            self._send_json(404, {"ok": False, "error": "这条录音删除未完成，无法播放"})
+            return
         found = find_audio(cfg, rec)
         if found is None:
             self._send_json(404, {"ok": False, "error": "没有可读的音频"})
@@ -1588,6 +1657,19 @@ class Handler(BaseHTTPRequestHandler):
         self.app.reload()
         self._send_json(200, self._features_payload())
 
+    def _delete_recordings(self) -> None:
+        body = self._json_object()
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not ids or any(not isinstance(rec_id, str) or not _ID_RE.fullmatch(rec_id) for rec_id in ids):
+            raise ValueError("ids 必须是非空的录音 id 数组")
+        try:
+            result = deletion.delete_recordings(self.app.cfg, ids)
+        except enrich.Locked:
+            self._send_json(409, {"ok": False, "locked": True, "error": "另一轮转写、总结或删除正在进行，这次没有开始。"})
+            return
+        self._send_json(200, result)
+        self.app.kick_maintenance()
+
     def _today(self, query: dict[str, list[str]]) -> None:
         cfg = self.app.cfg
         tz = ZoneInfo(cfg.timezone)
@@ -1611,13 +1693,13 @@ class Handler(BaseHTTPRequestHandler):
                     open_todos.append({**row, "id": rec.id, "title": title, "date": key, "when": format_when(rec.recorded_at)})
             if key == day:
                 items.append(public_record(cfg, rec, done=done))
-        digest = {"md": "", "path": "", "uri": "", "updated": ""}
+        digest = {"md": "", "path": "", "uri": "", "updated": "", **digest_queue.digest_status(cfg, state, day)}
         try:
             with enrich._db(cfg) as conn:
                 row = conn.execute("SELECT path, updated_at FROM digests WHERE day = ?", (day,)).fetchone()
         except Exception:
             row = None
-        if row and row["path"]:
+        if digest["state"] == "ready" and row and row["path"]:
             path = Path(row["path"])
             try:
                 if path.is_file() and not path.is_symlink():
@@ -1626,10 +1708,20 @@ class Handler(BaseHTTPRequestHandler):
                         "path": _vault_rel(cfg, str(path)),
                         "uri": obsidian_uri(path),
                         "updated": format_when(row["updated_at"]),
+                        "state": "ready",
+                        "error": "",
                     }
             except OSError:
                 pass
         today = datetime.now(tz).date()
+        # 历史摘要重建失败时，也必须能从日期菜单进入重试。
+        day_choices = dict(sorted(days.items(), reverse=True)[:30])
+        for queued_day in digest_queue.pending_days(cfg):
+            day_choices[queued_day] = days.get(queued_day, 0)
+        for task in state.pending_deletions():
+            queued_day = (task.get("manifest") or {}).get("day")
+            if queued_day:
+                day_choices[queued_day] = days.get(queued_day, 0)
         self._send_json(
             200,
             {
@@ -1641,7 +1733,7 @@ class Handler(BaseHTTPRequestHandler):
                 "digest_time": cfg.digest_time,
                 "items": items,
                 "todos": open_todos[:200],
-                "days": [{"date": key, "count": count} for key, count in sorted(days.items(), reverse=True)[:30]],
+                "days": [{"date": key, "count": count} for key, count in sorted(day_choices.items(), reverse=True)],
             },
             cookie=True,
         )
@@ -1658,12 +1750,19 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(done, bool):
             raise ValueError("done 必须是 true 或 false")
         cfg = self.app.cfg
-        if State(cfg.db_path).get(rec_id) is None:
-            raise KeyError(rec_id)
-        known = {todos.todo_key(text) for text in todos.todos_of(enrich.read_analysis(cfg, rec_id))}
-        if key not in known:
-            raise ValueError("这条录音里没有这个待办")
-        todos.set_done(cfg, rec_id, key, done)
+        with FileLock(cfg.lock_path) as acquired:
+            if not acquired:
+                self._send_json(409, {"ok": False, "locked": True, "error": "另一轮正在进行，这次没有修改待办。"})
+                return
+            rec = State(cfg.db_path).get(rec_id)
+            if rec is None:
+                raise KeyError(rec_id)
+            if rec.status in {"deleting", "delete_failed"}:
+                raise ValueError("这条录音删除未完成，请先重试删除")
+            known = {todos.todo_key(text) for text in todos.todos_of(enrich.read_analysis(cfg, rec_id))}
+            if key not in known:
+                raise ValueError("这条录音里没有这个待办")
+            todos.set_done(cfg, rec_id, key, done)
         self._send_json(200, {"ok": True, "id": rec_id, "key": key, "done": done})
 
     def _activity(self) -> None:
@@ -1677,6 +1776,7 @@ class Handler(BaseHTTPRequestHandler):
         processing = [rec for rec in records if rec.status == "processing"]
         pending = [rec for rec in records if group_of(rec.status) == "pending"]
         waiting = []
+        digest_days = digest_queue.pending_days(cfg)
         if cfg.llm_enabled or cfg.obsidian_enabled:
             for rec in records:
                 if rec.status == "transcribed":
@@ -1691,14 +1791,18 @@ class Handler(BaseHTTPRequestHandler):
             phase, text = "transcribing", "正在转写：" + "、".join(title(rec) for rec in processing[:2])
         elif lock.get("busy") and waiting:
             phase, text = "summarizing", "正在整理：" + title(waiting[0])
+        elif lock.get("busy") and digest_days:
+            phase, text = "summarizing", "正在更新删除后的摘要"
         elif lock.get("busy"):
             phase, text = "busy", "后台正在跑一轮"
-        elif pending or waiting:
+        elif pending or waiting or digest_days:
             bits = []
             if pending:
                 bits.append(f"{len(pending)} 条等转写")
             if waiting:
                 bits.append(f"{len(waiting)} 条等整理")
+            if digest_days:
+                bits.append(f"{len(digest_days)} 天摘要待更新")
             phase, text = "queued", "，".join(bits) + "，下一轮处理"
         else:
             phase, text = "idle", "都处理完了"
@@ -1863,6 +1967,7 @@ def build_server(app: WebApp, host: str = DEFAULT_HOST, port: int = 0) -> WebSer
     install_signal_handlers()
     server = WebServer((host, port), Handler)
     server.app = app  # type: ignore[attr-defined]
+    app.kick_maintenance()
     return server
 
 

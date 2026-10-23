@@ -51,17 +51,37 @@ def set_done(cfg: Config, rec_id: str, key: str, done: bool) -> dict[str, str]:
         if len(data) > MAX_ITEMS:
             for old in sorted(data, key=data.get)[: len(data) - MAX_ITEMS]:
                 data.pop(old, None)
-        path = done_path(cfg)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=".todos.", dir=str(path.parent))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, ensure_ascii=False, indent=1, sort_keys=True)
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        _save_done(cfg, data)
         return data
+
+
+def _save_done(cfg: Config, data: dict[str, str]) -> None:
+    path = done_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".todos.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def remove_record(cfg: Config, rec_id: str) -> None:
+    """删除一条录音的勾选状态，和界面写入串行执行，保留其他录音。"""
+    with _LOCK:
+        path = done_path(cfg)
+        if path.is_symlink():
+            raise ValueError(f"拒绝跟随符号链接：{path}")
+        if not path.exists():
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("待办状态文件格式无效")
+        remaining = {key: value for key, value in data.items() if not key.startswith(f"{rec_id}:")}
+        if remaining != data:
+            _save_done(cfg, remaining)
 
 
 def todos_of(analysis: dict) -> list[str]:

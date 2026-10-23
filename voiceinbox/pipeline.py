@@ -81,7 +81,10 @@ def run_once(cfg: Config, *, transcribe_fn=None) -> RunStats:
 
 
 def _run_locked(cfg: Config, stats: RunStats, transcribe_fn) -> None:
+    from voiceinbox.deletion import resume_deletions_locked
+
     state = State(cfg.db_path)
+    resume_deletions_locked(cfg, state)
     found = discover(cfg, state)
     stats.discovered = len(found.new_ids)
     stats.fda_blocked = found.fda_blocked
@@ -268,6 +271,8 @@ def retranscribe(
         rec = state.get(rec_id)
         if rec is None:
             raise KeyError(rec_id)
+        if state.deletion_pending(rec.id):
+            raise ValueError("这条录音删除未完成，请先重试删除")
         txt = _transcript_file(cfg, rec.id)
         if txt.is_symlink():
             raise RuntimeError(f"拒绝跟随转写文本的符号链接：{txt}")
@@ -334,6 +339,7 @@ def status_text(cfg: Config) -> str:
 
 
 def _record_for_manual(cfg: Config, state: State, path: Path, sha: str) -> Record:
+    state.clear_completed_deletion(sha)
     existing = state.get_by_sha(sha)
     if existing and existing.status == "transcribed":
         return existing

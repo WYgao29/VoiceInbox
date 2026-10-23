@@ -43,6 +43,7 @@ const LABEL_TONE: Record<string, StatusTone> = {
   太短已跳过: "waiting",
   已总结: "done",
   总结没成功: "failed",
+  删除未完成: "failed",
   仅转写: "waiting",
   等待总结: "waiting",
   还没整理: "queued",
@@ -102,6 +103,16 @@ export function deleteRuleConfirm(wrong: string, right: string): ConfirmRequest 
   return {
     title: "删掉这条纠错",
     message: `删掉「${wrong} → ${right}」？`,
+    confirmLabel: "删除",
+    danger: true,
+  };
+}
+
+export function deleteRecordingsConfirm(count: number, title?: string): ConfirmRequest {
+  const target = count === 1 && title ? `「${title}」这 1 条录音` : `所选的 ${count} 条录音`;
+  return {
+    title: count === 1 ? "删除录音" : `删除 ${count} 条录音`,
+    message: `删除${target}？会清理应用中的音频副本、转写、总结和待办，以及 Obsidian 中由应用生成的内容。语音备忘录和导入文件的原件、Obsidian 中你手写的内容都会保留。删除后无法在应用中恢复。`,
     confirmLabel: "删除",
     danger: true,
   };

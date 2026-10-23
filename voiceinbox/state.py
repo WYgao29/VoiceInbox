@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -49,6 +50,14 @@ CREATE TABLE IF NOT EXISTS seen_files (
   mtime      REAL NOT NULL,
   sha256     TEXT,
   since_skip TEXT
+);
+CREATE TABLE IF NOT EXISTS recording_deletions (
+  id         TEXT PRIMARY KEY,
+  sha256     TEXT UNIQUE NOT NULL,
+  manifest   TEXT,
+  state      TEXT NOT NULL,
+  last_error TEXT,
+  deleted_at TEXT NOT NULL
 );
 """
 
@@ -115,6 +124,107 @@ class State:
             row = conn.execute("SELECT * FROM recordings WHERE sha256 = ?", (sha256,)).fetchone()
         return _record(row) if row else None
 
+    @staticmethod
+    def _deletion(row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        result = dict(row)
+        result["manifest"] = json.loads(result["manifest"]) if result["manifest"] else {}
+        return result
+
+    def deletion_for_id(self, rec_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM recording_deletions WHERE id = ?", (rec_id,)).fetchone()
+        return self._deletion(row)
+
+    def is_deleted_sha(self, sha256: str) -> bool:
+        with self._connect() as conn:
+            return conn.execute("SELECT 1 FROM recording_deletions WHERE sha256 = ?", (sha256,)).fetchone() is not None
+
+    def deletion_pending(self, rec_id: str) -> bool:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT 1 FROM recording_deletions WHERE id = ? AND state != 'completed'", (rec_id,),
+            ).fetchone() is not None
+
+    def pending_deletions(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recording_deletions WHERE state != 'completed' ORDER BY deleted_at, id",
+            ).fetchall()
+        return [self._deletion(row) for row in rows]
+
+    def clear_completed_deletion(self, sha256: str) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT state FROM recording_deletions WHERE sha256 = ?", (sha256,)).fetchone()
+            if row is not None and row["state"] != "completed":
+                raise ValueError("这段录音尚未删除完成，请先重试删除")
+            conn.execute("DELETE FROM recording_deletions WHERE sha256 = ?", (sha256,))
+
+    def begin_deletion(self, rec_id: str, manifest: dict) -> dict:
+        """先持久保存清理清单，再让所有正常处理入口避开这条录音。调用方已持共享锁。"""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            task = conn.execute("SELECT * FROM recording_deletions WHERE id = ?", (rec_id,)).fetchone()
+            if task is None:
+                rec = conn.execute("SELECT sha256 FROM recordings WHERE id = ?", (rec_id,)).fetchone()
+                if rec is None:
+                    raise KeyError(rec_id)
+                conn.execute(
+                    "INSERT INTO recording_deletions (id, sha256, manifest, state, deleted_at) VALUES (?, ?, ?, 'deleting', ?)",
+                    (rec_id, rec["sha256"], json.dumps(manifest, ensure_ascii=False), now_iso()),
+                )
+            elif task["state"] == "completed":
+                return self._deletion(task)
+            else:
+                conn.execute("UPDATE recording_deletions SET state = 'deleting', last_error = NULL WHERE id = ?", (rec_id,))
+            conn.execute(
+                "UPDATE recordings SET status = 'deleting', last_error = NULL, next_retry_at = NULL, updated_at = ? WHERE id = ?",
+                (now_iso(), rec_id),
+            )
+            row = conn.execute("SELECT * FROM recording_deletions WHERE id = ?", (rec_id,)).fetchone()
+        return self._deletion(row)
+
+    def save_deletion_manifest(self, rec_id: str, manifest: dict) -> None:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE recording_deletions SET manifest = ? WHERE id = ? AND state != 'completed'",
+                (json.dumps(manifest, ensure_ascii=False), rec_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(rec_id)
+
+    def fail_deletion(self, rec_id: str, error: str) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE recording_deletions SET state = 'delete_failed', last_error = ? WHERE id = ? AND state != 'completed'",
+                (error, rec_id),
+            )
+            conn.execute(
+                "UPDATE recordings SET status = 'delete_failed', last_error = ?, next_retry_at = NULL, updated_at = ? WHERE id = ?",
+                (error, now_iso(), rec_id),
+            )
+
+    def complete_deletion(self, rec_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            task = conn.execute("SELECT sha256 FROM recording_deletions WHERE id = ?", (rec_id,)).fetchone()
+            if task is None:
+                raise KeyError(rec_id)
+            conn.execute("DELETE FROM recordings WHERE id = ? AND sha256 = ?", (rec_id, task["sha256"]))
+            conn.execute("DELETE FROM seen_files WHERE sha256 = ?", (task["sha256"],))
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'enrichment'").fetchone():
+                conn.execute("DELETE FROM enrichment WHERE id = ?", (rec_id,))
+            conn.execute(
+                "UPDATE recording_deletions SET state = 'completed', manifest = NULL, last_error = NULL WHERE id = ?", (rec_id,),
+            )
+
+    def seen_paths_for_sha(self, sha256: str) -> list[str]:
+        with self._connect() as conn:
+            return [row["path"] for row in conn.execute("SELECT path FROM seen_files WHERE sha256 = ?", (sha256,))]
+
     def upsert_discovered(
         self,
         *,
@@ -126,12 +236,15 @@ class State:
         duration_s: float | None = None,
         apple_title: str | None = None,
     ) -> Record:
+        if self.is_deleted_sha(sha256):
+            raise ValueError("这段录音已标记删除，不能自动重新导入")
         existing = self.get_by_sha(sha256)
         if existing:
             return existing
         rec_id = sha256[:12]
         taken = self.get(rec_id)
-        if taken is not None and taken.sha256 != sha256:
+        old_deletion = self.deletion_for_id(rec_id)
+        if (taken is not None and taken.sha256 != sha256) or (old_deletion and old_deletion["sha256"] != sha256):
             rec_id = sha256[:20]
         stamp = now_iso()
         with self._connect() as conn:
@@ -168,6 +281,10 @@ class State:
         columns = ", ".join(f"{name} = ?" for name in assignments)
         values = list(assignments.values()) + [rec_id]
         with self._connect() as conn:
+            if status not in {"deleting", "delete_failed"} and conn.execute(
+                "SELECT 1 FROM recording_deletions WHERE id = ? AND state != 'completed'", (rec_id,),
+            ).fetchone():
+                raise ValueError("这条录音正在删除或删除失败，请先完成删除")
             cursor = conn.execute(f"UPDATE recordings SET {columns} WHERE id = ?", values)
             if cursor.rowcount != 1:
                 raise KeyError(rec_id)
@@ -180,6 +297,8 @@ class State:
         rec = self.get(rec_id)
         if rec is None:
             raise KeyError(rec_id)
+        if rec.status in {"deleting", "delete_failed"} or self.deletion_pending(rec_id):
+            raise ValueError("这条录音正在删除或删除失败，不能转写")
         if rec.status in {"transcribed", "dead", "skipped"}:
             return rec.status
         if rec.attempts >= max_attempts:
@@ -261,6 +380,8 @@ class State:
     def reset_for_retry(self, rec_id: str) -> None:
         if self.get(rec_id) is None:
             raise KeyError(rec_id)
+        if self.deletion_pending(rec_id):
+            raise ValueError("这条录音正在删除或删除失败，不能重试转写")
         self.advance(rec_id, "stable", attempts=0, last_error=None, next_retry_at=None)
 
     def due_for_work(self, now: datetime) -> list[Record]:
@@ -269,7 +390,8 @@ class State:
             rows = conn.execute(
                 """
                 SELECT * FROM recordings
-                WHERE status NOT IN ('transcribed', 'dead', 'skipped')
+                WHERE status NOT IN ('transcribed', 'dead', 'skipped', 'deleting', 'delete_failed')
+                  AND NOT EXISTS (SELECT 1 FROM recording_deletions d WHERE d.id = recordings.id)
                   AND (next_retry_at IS NULL OR next_retry_at <= ?)
                 ORDER BY COALESCE(recorded_at, '9999') ASC, created_at ASC
                 """,

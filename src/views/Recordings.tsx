@@ -38,6 +38,18 @@ function Card({ item }: { item: Recording }) {
   const inbox = useInbox();
   const active = item.id === inbox.state.selectedId;
   return (
+    <div className={inbox.state.selecting ? "rec-row is-selecting" : "rec-row"}>
+      {inbox.state.selecting ? (
+        <label className="rec-check">
+          <input
+            type="checkbox"
+            aria-label={`选择 ${recordingTitle(item)}`}
+            checked={inbox.state.checkedIds.includes(item.id)}
+            disabled={inbox.state.busy}
+            onChange={() => inbox.toggleRecordingSelection(item.id)}
+          />
+        </label>
+      ) : null}
     <button
       type="button"
       className={active ? "rec-card is-on" : "rec-card"}
@@ -59,6 +71,7 @@ function Card({ item }: { item: Recording }) {
         {item.hit_field ? <em>{item.hit_field}{item.hit_at_label ? ` · ${item.hit_at_label}` : ""}</em> : null}
       </span>
     </button>
+    </div>
   );
 }
 
@@ -167,6 +180,11 @@ function Player({ id }: { id: string }) {
 export function Recordings() {
   const inbox = useInbox();
   const { state } = inbox;
+  const allRef = useRef<HTMLInputElement | null>(null);
+  const checkedVisible = state.items.filter((item) => state.checkedIds.includes(item.id)).length;
+  useEffect(() => {
+    if (allRef.current) allRef.current.indeterminate = checkedVisible > 0 && checkedVisible < state.items.length;
+  }, [checkedVisible, state.items.length, state.selecting]);
   const emptyKind = recordingsEmptyKind({
     query: state.query,
     kind: state.kind,
@@ -185,6 +203,30 @@ export function Recordings() {
   return (
     <div className="workspace">
       <section className="list-pane" aria-label="录音列表">
+        <div className="recordings-toolbar">
+          <h2 id="recordings-list-heading" tabIndex={-1}>录音</h2>
+          <button type="button" className="secondary" disabled={state.busy} onClick={() => inbox.setSelecting(!state.selecting)}>
+            {state.selecting ? "完成选择" : "选择"}
+          </button>
+        </div>
+        {state.selecting ? (
+          <div className="recordings-selection">
+            <label>
+              <input ref={allRef} type="checkbox" aria-label="全选当前结果" checked={Boolean(state.items.length && checkedVisible === state.items.length)} disabled={state.busy || !state.items.length} onChange={(event) => inbox.selectAllRecordings(event.target.checked)} />
+              全选当前结果
+            </label>
+            <button type="button" className="danger" disabled={state.busy || !state.checkedIds.length} onClick={() => void inbox.deleteRecordings(state.checkedIds)}>
+              删除所选（{state.checkedIds.length}）
+            </button>
+          </div>
+        ) : null}
+        {state.deleteErrors.length ? (
+          <div className="delete-errors" role="status">
+            <p>以下录音删除未完成，可重试删除：</p>
+            <ul>{state.deleteErrors.map((failure) => <li key={failure.id}>{failure.title}：{failure.error}</li>)}</ul>
+            <button type="button" className="secondary" disabled={state.busy} onClick={() => void inbox.deleteRecordings(state.deleteErrors.map((failure) => failure.id))}>重试删除未完成项</button>
+          </div>
+        ) : null}
         <div className="filters">
           <div className="seg" role="group" aria-label="类型">
             {(
@@ -293,6 +335,21 @@ function Detail() {
       </section>
     );
   }
+  if (item.deletion_pending) {
+    return (
+      <section className="detail" aria-label="录音详情">
+        <div className="detail-head">
+          <div className="detail-title-actions">
+            <span className="status-pill" data-state="failed">删除未完成</span>
+            <button type="button" className="danger" disabled={inbox.state.busy} onClick={() => void inbox.deleteRecordings([item.id])}>重试删除</button>
+          </div>
+          <h2>{recordingTitle(item)}</h2>
+          <p className="meta">{[item.recorded_label, item.duration_label, item.source_label].filter(Boolean).join(" · ")}</p>
+        </div>
+        <div className="reason-box"><p>{item.reason || "部分内容尚未清理，请重试删除。"}</p></div>
+      </section>
+    );
+  }
   const analysis = item.analysis;
   const tabs = visibleDetailTabs(item);
   const summary = analysis?.summary;
@@ -323,6 +380,7 @@ function Detail() {
   return (
     <section className="detail" aria-label="录音详情">
       <div className="detail-head">
+        <div className="detail-title-actions">
         <div className="title-row">
           <span className="scene-pill">{analysis?.route === "flash" ? "闪念" : item.scene || item.status_label}</span>
           {item.group !== "done" ? (
@@ -335,6 +393,8 @@ function Detail() {
               {analysis.state_label}
             </span>
           ) : null}
+        </div>
+        <button type="button" className="danger" disabled={inbox.state.busy} onClick={() => void inbox.deleteRecordings([item.id])}>删除录音</button>
         </div>
         <h2>{recordingTitle(item)}</h2>
         <p className="meta">

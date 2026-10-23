@@ -106,6 +106,9 @@ def _consider(
     # 旧版本把 since 之前的录音写成 skipped。删掉这些行，避免改了 since 也永远不再处理。
     state.forget_since_skips(original_path=key)
     known = state.seen_sha_if_unchanged(key, stat.st_size, stat.st_mtime)
+    if known and state.is_deleted_sha(known):
+        result.skipped_known += 1
+        return
     if known and state.get_by_sha(known):
         result.skipped_known += 1
         return
@@ -124,6 +127,10 @@ def _consider(
         return
     stat = path.stat()
     sha = file_sha256(path)
+    if state.is_deleted_sha(sha):
+        state.remember_seen(key, stat.st_size, stat.st_mtime, sha)
+        result.skipped_known += 1
+        return
     state.forget_since_skips(sha256=sha)
     if state.get_by_sha(sha):
         state.remember_seen(key, stat.st_size, stat.st_mtime, sha)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -380,3 +381,140 @@ def vault_link(cfg: Config, path: Path) -> str:
     assert cfg.obsidian_vault is not None
     rel = path.resolve().relative_to(cfg.obsidian_vault.resolve())
     return str(rel.with_suffix(""))
+
+
+# 删除不使用 write_if_changed：不能先把待删除的内容复制到新备份。
+def _deletion_text(cfg: Config, path: Path) -> str | None:
+    root = cfg.obsidian_root
+    if root is None:
+        raise ObsidianError("没有设置原 Obsidian 库，无法删除已导出的内容")
+    path, root = Path(os.path.abspath(path)), Path(os.path.abspath(root))
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise ObsidianError(f"拒绝删除 Obsidian 子目录外的文件：{path}") from exc
+    if not relative.parts or path.suffix != ".md":
+        raise ObsidianError(f"不是受管 Markdown 文件：{path}")
+    for candidate in (*reversed(path.parents), path):
+        if candidate.is_symlink():
+            raise ObsidianError(f"拒绝跟随符号链接：{candidate}")
+    if not _inside(path, root) or any(_inside(path, preserved) for preserved in (cfg.voice_memos_dir, cfg.backup_dir, cfg.logs_dir)):
+        raise ObsidianError(f"Obsidian 文件路径异常：{path}")
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise ObsidianError(f"不是普通文件：{path}")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeError as exc:
+        raise ObsidianError(f"笔记不是有效 UTF-8：{path}") from exc
+
+
+def _deletion_frontmatter(text: str) -> tuple[list[tuple[str, list[str]]], str]:
+    if text.startswith("---") and not (text.startswith("---\n") and ("\n---\n" in text[4:] or text.endswith("\n---"))):
+        raise ObsidianError("笔记 frontmatter 格式不完整，未执行删除")
+    entries, body = split_frontmatter(text)
+    keys = [key for key, _raw in entries if key]
+    if len(keys) != len(set(keys)):
+        raise ObsidianError("笔记 frontmatter 含重复字段，未执行删除")
+    return entries, body
+
+
+def _field(entries: list[tuple[str, list[str]]], name: str) -> str | None:
+    for key, lines in entries:
+        if key == name:
+            raw = lines[0].split(":", 1)[1].strip()
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                if raw.startswith("'") and raw.endswith("'"):
+                    value = raw[1:-1].replace("''", "'")
+                else:
+                    value = raw.split(" #", 1)[0].strip()
+            return str(value)
+    return None
+
+
+def _without_managed_frontmatter(entries: list[tuple[str, list[str]]], body: str, keys: set[str]) -> str:
+    lines: list[str] = []
+    for key, raw in entries:
+        if key not in keys:
+            lines.extend(raw)
+        else:
+            # 用户在受管属性之间写的注释也保留。
+            lines.extend(line for line in raw[1:] if line.lstrip().startswith("#"))
+    head = "---\n" + "\n".join(lines).rstrip("\n") + "\n---\n" if any(line.strip() for line in lines) else ""
+    return head + body.lstrip("\n")
+
+
+def _write_for_deletion(path: Path, text: str) -> None:
+    if not text.strip():
+        path.unlink()
+        return
+    if path.read_text(encoding="utf-8") == text:
+        return
+    fd, temporary = tempfile.mkstemp(prefix=".voiceinbox-delete-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def _remove_note_content(cfg: Config, path: Path, identity: dict[str, str], managed_keys: set[str]) -> None:
+    text = _deletion_text(cfg, path)
+    if text is None:
+        return
+    entries, body = _deletion_frontmatter(text)
+    matches = list(_BLOCK_RE.finditer(body))
+    markers = body.count("<!-- voiceinbox:begin") + body.count("<!-- voiceinbox:end")
+    if not matches and not markers and all(_field(entries, name) is None for name in identity):
+        return  # 前一次已移除受管内容，剩下的是用户文字。
+    if any(_field(entries, name) != value for name, value in identity.items()):
+        raise ObsidianError(f"笔记身份与待删除记录不符：{path}")
+    if len(matches) != 1 or markers != 2:
+        raise ObsidianError(f"笔记受管标记不完整或重复：{path}")
+    body = body[: matches[0].start()] + body[matches[0].end() :]
+    _write_for_deletion(path, _without_managed_frontmatter(entries, body, managed_keys))
+
+
+def remove_recording_note(cfg: Config, path: Path, rec_id: str) -> None:
+    """只移除指定录音的受管正文和属性；用户内容保留，纯生成文件删除。"""
+    _remove_note_content(cfg, Path(path), {"id": rec_id, "source": "voiceinbox"}, set(MANAGED_KEYS))
+
+
+def remove_digest_content(cfg: Config, path: Path, day: str) -> None:
+    _remove_note_content(
+        cfg, Path(path), {"date": day, "type": "当日摘要", "source": "voiceinbox"},
+        {"date", "type", "tags", "people", "project", "recordings", "source"},
+    )
+
+
+def remove_flash_for_deletion(cfg: Config, path: Path, rec_id: str) -> None:
+    path = Path(path)
+    text = _deletion_text(cfg, path)
+    if text is None:
+        return
+    entries, body = _deletion_frontmatter(text)
+    pattern = re.compile(_FLASH_RE_T.format(id=re.escape(rec_id)), re.S)
+    matches = list(pattern.finditer(body))
+    markers = body.count(f"<!-- voiceinbox:flash {rec_id} ")
+    if not matches and not markers:
+        return
+    day = _field(entries, "date")
+    if not day or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or _field(entries, "source") != "voiceinbox" or _field(entries, "type") != "闪念":
+        raise ObsidianError(f"不是程序生成的每日闪念笔记：{path}")
+    if len(matches) != 1 or markers != 2:
+        raise ObsidianError(f"闪念受管标记不完整或重复：{path}")
+    body = body[: matches[0].start()] + body[matches[0].end() :]
+    if "<!-- voiceinbox:flash " not in body:
+        _empty_entries, skeleton = split_frontmatter(_daily_skeleton(cfg, day))
+        if body.startswith(skeleton):
+            body = body[len(skeleton) :]
+        text = _without_managed_frontmatter(entries, body, {"date", "type", "tags", "source"})
+    else:
+        head = text[: len(text) - len(split_frontmatter(text)[1])]
+        text = head + body
+    _write_for_deletion(path, text)

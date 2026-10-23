@@ -38,6 +38,7 @@ VoiceInbox does the whole job on your own Mac: iCloud syncs your recordings, Voi
 | 📝 | **Obsidian output** | Frontmatter and wikilinks; only a managed block is rewritten, your own edits are kept, with backups before overwrite. |
 | 🗓️ | **Daily digest** | An evening summary of the day; the Today view browses dates and gathers all open to-dos. |
 | 🔍 | **Full-text search** | SQLite FTS5 with date filters and highlighted hits. |
+| 🗑️ | **Delete recordings** | Delete one or several recordings, including app copies and generated Obsidian content. Originals and handwritten content are kept; affected daily digests are rebuilt. |
 | ⏱️ | **Background monitoring** | A macOS launchd job processes new recordings at login, on folder changes and on a timer; one model task at a time. |
 | 🖥️ | **Mac desktop app** | Electron + React + TypeScript: Recordings, Today, Vocabulary and Settings, light/dark themes and keyboard shortcuts. |
 
@@ -131,6 +132,7 @@ macOS keeps Voice Memos data in a protected folder. VoiceInbox grants access onl
 <details><summary><b>Will it overwrite my edits in Obsidian?</b></summary>
 
 No. It only rewrites its own managed block; everything outside is kept, and a backup is made before each overwrite.
+Deletion removes generated content without making a new backup. Existing backups and logs are kept. Deleted audio is skipped during automatic scans, even after renaming; explicitly importing it again allows reprocessing.
 </details>
 
 <details><summary><b>Which languages?</b></summary>

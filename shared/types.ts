@@ -64,6 +64,7 @@ export interface Recording {
   duration_label?: string;
   attempts?: number;
   reason?: string;
+  deletion_pending?: boolean;
   next_retry_at?: string;
   preview?: string;
   brief?: string;
