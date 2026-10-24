@@ -19,7 +19,7 @@ function Fact({ name, value }: { name: string; value: string }) {
 function RecordingInfo() {
   const inbox = useInbox();
   const item = inbox.state.detail;
-  if (!item) return <p className="empty">选一条录音后，这里显示场景、标签和状态。</p>;
+  if (!item || item.id !== inbox.state.selectedId) return <p className="empty">{inbox.state.detailLoading ? "正在读取录音信息…" : inbox.state.detailError ? "录音信息未能读取，请在正文区域重试。" : "选一条录音后，这里显示场景、标签和状态。"}</p>;
   const analysis = item.analysis;
   return (
     <>
@@ -31,8 +31,6 @@ function RecordingInfo() {
         <Fact name="人物" value={(analysis?.people || []).join("、")} />
         <Fact name="项目" value={(analysis?.projects || []).join("、")} />
         <Fact name="音频" value={[item.audio_label, item.duration_label].filter(Boolean).join(" · ")} />
-        <Fact name="尝试" value={item.attempts ? String(item.attempts) : ""} />
-        <Fact name="编号" value={item.id} />
       </dl>
       {analysis?.obsidian_uri ? (
         <button type="button" className="secondary" onClick={() => openObsidian(analysis.obsidian_uri || "")}>
@@ -41,6 +39,13 @@ function RecordingInfo() {
       ) : (
         <p className="help">{analysis?.obsidian_label || "还没有写到 Obsidian。"}</p>
       )}
+      <details className="fold">
+        <summary>技术信息</summary>
+        <dl className="facts">
+          <Fact name="尝试" value={item.attempts ? String(item.attempts) : ""} />
+          <Fact name="编号" value={item.id} />
+        </dl>
+      </details>
     </>
   );
 }
@@ -59,7 +64,7 @@ function TodayInfo() {
   return (
     <>
       <div className="panel-head">
-        <h2>
+        <h2 id="today-todos-heading" tabIndex={-1}>
           待办 {open.length ? <span className="count">{open.length}</span> : null}
         </h2>
         <label className="check">
@@ -68,6 +73,7 @@ function TodayInfo() {
         </label>
       </div>
       <p className="help">来自所有录音的总结和闪念。勾选只记在本机，不改 Obsidian 笔记。</p>
+      <div data-todo-list>
       {groups.size ? (
         Array.from(groups.entries()).map(([id, group]) => (
           <section key={id} className="todo-group">
@@ -76,28 +82,47 @@ function TodayInfo() {
               {group.when ? <small>{shortWhen(group.when)}</small> : null}
             </button>
             <ul className="todo-list">
-              {group.items.map((todo) => (
-                <li key={todo.key} className={todo.done ? "is-done" : ""}>
+              {group.items.map((todo) => {
+                const operation = `${id}:${todo.key}`;
+                const pending = inbox.state.todoPending?.[operation];
+                const error = inbox.state.todoErrors?.[operation];
+                return (
+                <li key={todo.key} className={(pending ?? todo.done) ? "is-done" : ""} aria-busy={pending !== undefined}>
                   <label>
                     <input
                       type="checkbox"
-                      checked={Boolean(todo.done)}
+                      checked={pending ?? Boolean(todo.done)}
+                      aria-disabled={pending !== undefined}
+                      onClick={(event) => { if (pending !== undefined) event.preventDefault(); }}
                       onChange={(event) => {
-                        void inbox.toggleTodo(id, todo.key, event.target.checked);
+                        const trigger = event.currentTarget;
+                        const list = trigger.closest("[data-todo-list]");
+                        const inputs = list ? [...list.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')] : [];
+                        const index = inputs.indexOf(trigger);
+                        void inbox.toggleTodo(id, todo.key, event.target.checked).then(() => {
+                          window.requestAnimationFrame(() => {
+                            if (trigger.isConnected || document.activeElement !== document.body) return;
+                            const remaining = list ? [...list.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:not(:disabled)')] : [];
+                            (remaining[Math.min(index, remaining.length - 1)] || document.getElementById("today-todos-heading"))?.focus();
+                          });
+                        });
                       }}
                     />
                     <span>
                       <RichText text={todo.text} query="" rules={inbox.state.rules} />
                     </span>
+                    {pending !== undefined ? <small className="todo-saving" role="status">保存中…</small> : null}
                   </label>
+                  {error ? <p className="inline-status" data-tone="error" role="alert">{error}</p> : null}
                 </li>
-              ))}
+              );})}
             </ul>
           </section>
         ))
       ) : (
         <p className="empty">这天没有待办。</p>
       )}
+      </div>
     </>
   );
 }
@@ -147,7 +172,7 @@ export function InfoPanel({
   returnFocus: RefObject<HTMLElement | null>;
 }) {
   const inbox = useInbox();
-  const title = inbox.state.view === "recordings" ? recordingTitle(inbox.state.detail) : "";
+  const title = inbox.state.view === "recordings" && inbox.state.detail?.id === inbox.state.selectedId ? recordingTitle(inbox.state.detail) : "";
   return (
     <InfoDrawerShell
       layout={layout}

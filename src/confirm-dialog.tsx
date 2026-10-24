@@ -1,7 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-
-const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+import { createContext, useCallback, useContext, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { ConfirmRequest } from "./ui-state";
+import { useDismissable } from "./dismissable";
+import { useModalFocus } from "./focus-trap";
 
 type Pending = ConfirmRequest & { resolve: (value: boolean) => void };
 
@@ -12,28 +12,33 @@ export function ConfirmDialogView({
   request,
   onCancel,
   onConfirm,
+  returnFocus,
 }: {
   request: ConfirmRequest;
   onCancel: () => void;
   onConfirm: () => void;
+  returnFocus?: RefObject<HTMLElement | null>;
 }) {
+  const root = useRef<HTMLDivElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
-  useEffect(() => {
-    cancelRef.current?.focus();
-  }, [request]);
+  useModalFocus(true, root, returnFocus, cancelRef);
+  useDismissable(true, onCancel, root, "click");
   return (
     <div className="scrim" onClick={onCancel}>
       <div
         className="dialog"
+        ref={root}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-title"
+        aria-describedby="confirm-description"
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="confirm-title">{request.title}</h2>
-        <p className="dialog-description">{request.message}</p>
+        <p id="confirm-description" className="dialog-description">{request.message}</p>
         <div className="dialog-actions">
-          <button type="button" className="secondary" autoFocus ref={cancelRef} onClick={onCancel}>
+          <button ref={cancelRef} type="button" className="secondary" autoFocus onClick={onCancel}>
             {request.cancelLabel || "取消"}
           </button>
           <button type="button" className={request.danger ? "danger" : "primary"} onClick={onConfirm}>
@@ -49,7 +54,9 @@ function activeTrigger(): HTMLElement | null {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return null;
   if (active === document.body || active === document.documentElement) return null;
-  return active;
+  // Action items disappear when they open a confirmation. Keep the stable
+  // trigger so cancelling can restore focus after that action group is gone.
+  return active.closest(".menu-pop")?.parentElement?.querySelector<HTMLElement>(":scope > button") || active;
 }
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
@@ -61,7 +68,9 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   const settle = useCallback((value: boolean) => {
     const current = pendingRef.current;
     if (!current) return;
-    restoreOnClose.current = value ? null : returnTo.current;
+    // Destructive recording actions choose a surviving row after their request
+    // completes. Other confirmations can safely return to their trigger.
+    restoreOnClose.current = value && current.danger ? null : returnTo.current;
     pendingRef.current = null;
     returnTo.current = null;
     current.resolve(value);
@@ -82,30 +91,11 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  useIsoLayoutEffect(() => {
-    if (pending) return;
-    const back = restoreOnClose.current;
-    restoreOnClose.current = null;
-    if (back?.isConnected) back.focus();
-  }, [pending]);
-
-  useEffect(() => {
-    if (!pending) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      settle(false);
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [pending, settle]);
-
   return (
     <ConfirmContext.Provider value={ask}>
       <DismissContext.Provider value={() => settle(false)}>
         {children}
-        {pending ? <ConfirmDialogView request={pending} onCancel={() => settle(false)} onConfirm={() => settle(true)} /> : null}
+        {pending ? <ConfirmDialogView request={pending} returnFocus={restoreOnClose} onCancel={() => settle(false)} onConfirm={() => settle(true)} /> : null}
       </DismissContext.Provider>
     </ConfirmContext.Provider>
   );

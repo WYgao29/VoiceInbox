@@ -77,16 +77,20 @@ export function MarkdownView({ text, query = "", skip = [] }: { text: string; qu
 }
 
 function MindNodeView({ node, depth }: { node: MindNode; depth: number }) {
+  const children = node.children || [];
+  const label = <span className={`node d${Math.min(depth, 3)}`}>{node.name || "未命名分支"}</span>;
   return (
     <li>
-      <span className={`node d${Math.min(depth, 3)}`}>{node.name || ""}</span>
-      {node.children?.length ? (
-        <ul>
-          {node.children.map((child, index) => (
-            <MindNodeView key={index} node={child} depth={depth + 1} />
-          ))}
-        </ul>
-      ) : null}
+      {children.length ? (
+        <details open={depth < 2}>
+          <summary>{label}</summary>
+          <ul>
+            {children.map((child, index) => (
+              <MindNodeView key={index} node={child} depth={depth + 1} />
+            ))}
+          </ul>
+        </details>
+      ) : label}
     </li>
   );
 }
@@ -94,7 +98,7 @@ function MindNodeView({ node, depth }: { node: MindNode; depth: number }) {
 export function MindMap({ root, children }: { root: string; children: MindNode[] }) {
   if (!children.length) return <p className="empty">没有导图。</p>;
   return (
-    <div className="mindmap">
+    <div className="mindmap" role="group" aria-label="内容导图，可展开或折叠分支">
       <ul className="tree">
         <MindNodeView node={{ name: root, children }} depth={0} />
       </ul>

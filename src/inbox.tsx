@@ -106,11 +106,17 @@ export interface InboxState {
   checkedIds: string[];
   deleteErrors: { id: string; title: string; error: string }[];
   detail: Recording | null;
+  detailLoading: boolean;
+  detailError: string;
   tab: DetailTab;
   seek: number | null;
   showRaw: boolean;
   rate: number;
   today: TodayData | null;
+  todayLoading: boolean;
+  todayError: string;
+  todoPending: Record<string, boolean>;
+  todoErrors: Record<string, string>;
   day: string;
   showDoneTodos: boolean;
   rules: Rule[];
@@ -152,11 +158,17 @@ const initial: InboxState = {
   checkedIds: [],
   deleteErrors: [],
   detail: null,
+  detailLoading: false,
+  detailError: "",
   tab: "summary",
   seek: null,
   showRaw: false,
   rate: 1,
   today: null,
+  todayLoading: false,
+  todayError: "",
+  todoPending: {},
+  todoErrors: {},
   day: "",
   showDoneTodos: false,
   rules: [],
@@ -332,21 +344,28 @@ export function InboxProvider({ children }: { children: ReactNode }) {
   const select = async (id: string, options?: { keep?: boolean; seek?: number | null }) => {
     const gen = ++detailGen.current;
     const keep = Boolean(options?.keep && stateRef.current.detail?.id === id);
-    commit((current) => ({ ...current, selectedId: id }));
-    const data = await api<{ item: Recording }>(`/api/recordings/${id}`);
-    if (gen !== detailGen.current || stateRef.current.selectedId !== id) return;
-    commit((current) => {
-      const visible = visibleDetailTabs(data.item);
-      const preferred = keep ? current.tab : data.item.analysis ? "summary" : "text";
-      const tab = (visible.includes(preferred) ? preferred : visible[0] || "text") as DetailTab;
-      return {
-        ...current,
-        detail: data.item,
-        tab,
-        showRaw: keep ? current.showRaw : false,
-        seek: options && "seek" in options ? options.seek ?? null : keep ? current.seek : data.item.hit_at ?? null,
-      };
-    });
+    commit((current) => ({ ...current, selectedId: id, detailLoading: !keep, detailError: "" }));
+    try {
+      const data = await api<{ item: Recording }>(`/api/recordings/${id}`);
+      if (gen !== detailGen.current || stateRef.current.selectedId !== id) return;
+      commit((current) => {
+        const visible = visibleDetailTabs(data.item);
+        const preferred = keep ? current.tab : data.item.analysis ? "summary" : "text";
+        const tab = (visible.includes(preferred) ? preferred : visible[0] || "text") as DetailTab;
+        return {
+          ...current,
+          detail: data.item,
+          detailLoading: false,
+          detailError: "",
+          tab,
+          showRaw: keep ? current.showRaw : false,
+          seek: options && "seek" in options ? options.seek ?? null : keep ? current.seek : data.item.hit_at ?? null,
+        };
+      });
+    } catch (error) {
+      if (gen !== detailGen.current || stateRef.current.selectedId !== id) return;
+      commit((current) => ({ ...current, detailLoading: false, detailError: error instanceof Error ? error.message : "录音读取失败" }));
+    }
   };
 
   const deletionPending = (id: string) => Boolean(
@@ -416,6 +435,9 @@ export function InboxProvider({ children }: { children: ReactNode }) {
           items: current.items.filter((item) => !deleted.has(item.id)).map(hidePendingContent),
           selectedId: selectedDeleted ? "" : current.selectedId,
           detail: selectedDeleted ? null : current.detail ? hidePendingContent(current.detail) : null,
+          detailLoading: false,
+          detailError: "",
+          todayLoading: false,
           seek: selectedDeleted ? null : current.seek,
           checkedIds: current.checkedIds.filter((id) => !deleted.has(id)),
           deleteErrors: failures,
@@ -468,12 +490,16 @@ export function InboxProvider({ children }: { children: ReactNode }) {
 
   const loadToday = async (day = stateRef.current.day) => {
     const gen = ++todayGen.current;
+    commit((current) => ({ ...current, todayLoading: true, todayError: "" }));
     try {
       const data = await api<TodayData>(day ? `/api/today?date=${encodeURIComponent(day)}` : "/api/today");
       if (gen !== todayGen.current) return;
-      commit((current) => ({ ...current, today: data, day: data.date || day }));
+      commit((current) => ({ ...current, today: data, day: data.date || day, todayLoading: false, todayError: "" }));
     } catch (error) {
-      if (gen === todayGen.current) throw error;
+      if (gen === todayGen.current) {
+        commit((current) => ({ ...current, todayLoading: false, todayError: error instanceof Error ? error.message : "当日内容读取失败" }));
+        throw error;
+      }
     }
   };
 
@@ -644,6 +670,13 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       if (id) void select(id).catch((error: unknown) => notify(error instanceof Error ? error.message : "请求失败"));
     },
     toggleTodo: async (id, key, done) => {
+      const operation = `${id}:${key}`;
+      if (operation in stateRef.current.todoPending) return;
+      commit((current) => {
+        const errors = { ...current.todoErrors };
+        delete errors[operation];
+        return { ...current, todoPending: { ...current.todoPending, [operation]: done }, todoErrors: errors };
+      });
       try {
         await api("/api/todos", { method: "POST", json: { id, key, done } });
         commit((current) => ({
@@ -666,9 +699,18 @@ export function InboxProvider({ children }: { children: ReactNode }) {
               }
             : current.today,
         }));
+        notify(done ? "待办已完成" : "已设为未完成");
         void loadList().catch(() => undefined);
       } catch (error: unknown) {
-        notify(todoSaveError(error));
+        const message = todoSaveError(error);
+        commit((current) => ({ ...current, todoErrors: { ...current.todoErrors, [operation]: message } }));
+        notify(message);
+      } finally {
+        commit((current) => {
+          const pending = { ...current.todoPending };
+          delete pending[operation];
+          return { ...current, todoPending: pending };
+        });
       }
     },
     setDay: (day) => {

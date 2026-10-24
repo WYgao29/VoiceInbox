@@ -15,7 +15,16 @@ function dayChoices(today: TodayData): { date: string; count: number }[] {
 export function Today() {
   const inbox = useInbox();
   const today = inbox.state.today;
-  if (!today) return <p className="empty big">正在读取今天…</p>;
+  const requestedDay = inbox.state.day;
+  if (!today || (requestedDay && requestedDay !== today.date)) return (
+    <div className="today-view">
+      <div className="load-state" role={inbox.state.todayError ? "alert" : "status"} aria-busy={inbox.state.todayLoading}>
+        <h2>{inbox.state.todayError ? "当日内容未能读取" : "正在读取当日内容…"}</h2>
+        {inbox.state.todayError ? <><p>{inbox.state.todayError}</p><button type="button" className="secondary" onClick={() => inbox.setDay(requestedDay)}>重试读取</button></> : null}
+        {today ? <button type="button" className="text-button" onClick={() => inbox.setDay(today.date)}>返回 {today.date}</button> : null}
+      </div>
+    </div>
+  );
   const days = dayChoices(today);
   const index = days.findIndex((day) => day.date === today.date);
   const digest = today.digest;
@@ -26,17 +35,18 @@ export function Today() {
   const items = (today.items || []).slice().reverse();
   return (
     <div className="today-view">
+      {inbox.state.todayError ? <div className="inline-status" data-tone="error" role="alert"><p>更新失败：{inbox.state.todayError}</p><button type="button" className="text-button" onClick={() => inbox.setDay(today.date)}>重试更新</button></div> : null}
       <div className="today-head">
         <div>
           <p className="eyebrow">当日摘要</p>
           <h2>{weekdayLabel(today.date, Boolean(today.is_today))}</h2>
         </div>
         <div className="bulk">
-          <button type="button" className="secondary" disabled={index < 0 || index >= days.length - 1} onClick={() => {
+          <button type="button" className="secondary" title={days[index + 1] ? `查看 ${days[index + 1].date} 的录音` : undefined} disabled={index < 0 || index >= days.length - 1} onClick={() => {
             const next = days[index + 1];
             if (next) inbox.setDay(next.date);
           }}>
-            ‹ 前一天
+            ‹ 较早日期
           </button>
           <select aria-label="选日期" value={today.date} onChange={(event) => inbox.setDay(event.target.value)}>
             {days.map((day) => (
@@ -45,11 +55,11 @@ export function Today() {
               </option>
             ))}
           </select>
-          <button type="button" className="secondary" disabled={index <= 0} onClick={() => {
+          <button type="button" className="secondary" title={days[index - 1] ? `查看 ${days[index - 1].date} 的录音` : undefined} disabled={index <= 0} onClick={() => {
             const next = days[index - 1];
             if (next) inbox.setDay(next.date);
           }}>
-            后一天 ›
+            较晚日期 ›
           </button>
         </div>
       </div>

@@ -32,6 +32,7 @@ export function Sidebar() {
             key={item.view}
             type="button"
             className={state.view === item.view ? "is-on" : ""}
+            aria-current={state.view === item.view ? "page" : undefined}
             onClick={() => inbox.setView(item.view)}
           >
             <NavIcon name={item.view} />

@@ -4,6 +4,7 @@ import type { ViewName } from "../shared/types.js";
 import { ConfirmProvider } from "./confirm-dialog";
 import { destinationFromHash } from "./hash-view";
 import { useDismissable } from "./dismissable";
+import { hasOpenModal, useModalFocus } from "./focus-trap";
 import { InboxProvider, useInbox } from "./inbox";
 import { applyPlaybackRate } from "./playback";
 import { Sidebar } from "./Sidebar";
@@ -32,6 +33,33 @@ function isTyping(node: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || active.isContentEditable;
 }
 
+function isInteractive(node: EventTarget | null): boolean {
+  return node instanceof Element && Boolean(node.closest('button, a[href], summary, input, textarea, select, audio[controls], video[controls], [contenteditable="true"], [role="button"], [role="tab"], [role="slider"]'));
+}
+
+export function HelpDialog({ onClose }: { onClose: () => void }) {
+  const root = useRef<HTMLDivElement | null>(null);
+  useModalFocus(true, root);
+  useDismissable(true, onClose, root, "click");
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div ref={root} tabIndex={-1} className="dialog" role="dialog" aria-modal="true" aria-labelledby="help-title" onClick={(event) => event.stopPropagation()}>
+        <h2 id="help-title">键盘快捷键</h2>
+        <dl className="keys">
+          <div><dt><kbd>/</kbd></dt><dd>搜索</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>清空搜索 / 离开输入框</dd></div>
+          <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>下一条 / 上一条录音</dd></div>
+          <div><dt><kbd>1</kbd>–<kbd>4</kbd></dt><dd>纪要 / 待办 / 导图 / 原文</dd></div>
+          <div><dt><kbd>空格</kbd></dt><dd>播放 / 暂停</dd></div>
+          <div><dt><kbd>t</kbd></dt><dd>打开「今天」</dd></div>
+          <div><dt><kbd>?</kbd></dt><dd>打开这个说明</dd></div>
+        </dl>
+        <div className="dialog-actions"><button type="button" className="primary" onClick={onClose}>知道了</button></div>
+      </div>
+    </div>
+  );
+}
+
 function Shell() {
   const inbox = useInbox();
   const inboxRef = useRef(inbox);
@@ -42,14 +70,14 @@ function Shell() {
   const dragDepth = useRef(0);
   const [menu, setMenu] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
-  const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 1099px)").matches);
+  const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 1399px)").matches);
   const closeMenu = useCallback(() => setMenu(false), []);
   const closePanel = useCallback(() => setPanelOpen(false), []);
   useDismissable(menu, closeMenu, menuRoot);
   const { state } = inbox;
 
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 1099px)");
+    const media = window.matchMedia("(max-width: 1399px)");
     const onChange = () => setNarrow(media.matches);
     media.addEventListener("change", onChange);
     return () => media.removeEventListener("change", onChange);
@@ -68,6 +96,7 @@ function Shell() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
       const api = inboxRef.current;
       const current = api.state;
       const action = interpretKey(
@@ -75,6 +104,8 @@ function Shell() {
         { meta: event.metaKey, ctrl: event.ctrlKey, alt: event.altKey },
         {
           typing: isTyping(document.activeElement),
+          interactive: isInteractive(event.target) || isInteractive(document.activeElement),
+          modalOpen: hasOpenModal(),
           helpOpen: current.helpOpen,
           view: current.view,
           hasDetail: Boolean(current.detail),
@@ -84,7 +115,6 @@ function Shell() {
       );
       if (!action) return;
       if (action.type === "escape") {
-        if (current.helpOpen) api.setHelp(false);
         const active = document.activeElement as HTMLElement | null;
         if (active?.id === "query" && current.query) api.setQuery("");
         active?.blur();
@@ -98,7 +128,7 @@ function Shell() {
         const audio = api.audioRef.current;
         if (!audio) return;
         applyPlaybackRate(audio, api.state.rate);
-        if (audio.paused) void audio.play().catch(() => undefined);
+        if (audio.paused) void audio.play().catch(() => audio.dispatchEvent(new Event("error")));
         else audio.pause();
       } else if (action.type === "today") api.setView("today");
       else if (action.type === "help") api.setHelp(true);
@@ -198,11 +228,11 @@ function Shell() {
             }}
           />
           <div className="menu" ref={menuRoot}>
-            <button type="button" className="secondary icon-button" aria-label="更多" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu((open) => !open)}>
+            <button type="button" className="secondary icon-button" aria-label="更多" aria-expanded={menu} aria-controls="app-actions" onClick={() => setMenu((open) => !open)}>
               <MoreIcon />
             </button>
             {menu ? (
-              <div className="menu-pop" role="menu">
+              <div id="app-actions" className="menu-pop" role="group" aria-label="更多操作">
                 <button
                   type="button"
                   onClick={() => {
@@ -259,62 +289,7 @@ function Shell() {
         </p>
       ) : null}
       {state.dropOver ? <div className="drop-overlay">松开即可导入</div> : null}
-      {state.helpOpen ? (
-        <div className="scrim" onClick={() => inbox.setHelp(false)}>
-          <div className="dialog" role="dialog" aria-modal="true" aria-label="键盘快捷键" onClick={(event) => event.stopPropagation()}>
-            <h2>键盘快捷键</h2>
-            <dl className="keys">
-              <div>
-                <dt>
-                  <kbd>/</kbd>
-                </dt>
-                <dd>搜索</dd>
-              </div>
-              <div>
-                <dt>
-                  <kbd>Esc</kbd>
-                </dt>
-                <dd>清空搜索 / 离开输入框</dd>
-              </div>
-              <div>
-                <dt>
-                  <kbd>j</kbd> <kbd>k</kbd>
-                </dt>
-                <dd>下一条 / 上一条录音</dd>
-              </div>
-              <div>
-                <dt>
-                  <kbd>1</kbd>–<kbd>4</kbd>
-                </dt>
-                <dd>纪要 / 待办 / 导图 / 原文</dd>
-              </div>
-              <div>
-                <dt>
-                  <kbd>空格</kbd>
-                </dt>
-                <dd>播放 / 暂停</dd>
-              </div>
-              <div>
-                <dt>
-                  <kbd>t</kbd>
-                </dt>
-                <dd>打开「今天」</dd>
-              </div>
-              <div>
-                <dt>
-                  <kbd>?</kbd>
-                </dt>
-                <dd>打开这个说明</dd>
-              </div>
-            </dl>
-            <div className="dialog-actions">
-              <button type="button" className="primary" onClick={() => inbox.setHelp(false)}>
-                知道了
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {state.helpOpen ? <HelpDialog onClose={() => inbox.setHelp(false)} /> : null}
     </div>
   );
 }

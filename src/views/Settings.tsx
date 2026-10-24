@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useConfirm } from "../confirm-dialog";
 import { useInbox } from "../inbox";
 import { MONITOR_WRITE_WARNING, performMonitorWrite, type MonitorWrite } from "../monitor-confirm";
 import { monitorDialog } from "../ui-state";
+import { createSessionForm, useSessionForm } from "../session-form";
 
 const LANGUAGES: [string, string][] = [
   ["Chinese", "中文"],
@@ -11,6 +12,9 @@ const LANGUAGES: [string, string][] = [
 ];
 
 const PRESETS = [1, 5, 15, 30, 60];
+const transcriptionForm = createSessionForm({ since: "", limit: "20", language: "Chinese" });
+const featuresForm = createSessionForm({ llm: true, obsidian: true, digestOn: true, flash: "20" });
+const intervalForm = createSessionForm("15");
 
 export function Settings() {
   const inbox = useInbox();
@@ -19,37 +23,22 @@ export function Settings() {
   const monitor = state.monitor;
   const file = state.settingsFile;
   const features = state.featuresFile;
-  const [since, setSince] = useState("");
-  const [limit, setLimit] = useState("20");
-  const [language, setLanguage] = useState("Chinese");
-  const [llm, setLlm] = useState(true);
-  const [obsidian, setObsidian] = useState(true);
-  const [digestOn, setDigestOn] = useState(true);
-  const [flash, setFlash] = useState("20");
-  const [custom, setCustom] = useState("15");
+  const tx = useSessionForm(transcriptionForm, file ? {
+    since: file.since || "",
+    limit: String(file.max_per_run ?? ""),
+    language: file.language || "",
+  } : undefined);
+  const ft = useSessionForm(featuresForm, features ? {
+    llm: Boolean(features.llm_enabled),
+    obsidian: Boolean(features.obsidian_enabled),
+    digestOn: Boolean(features.digest_enabled),
+    flash: String(features.flash_max_s ?? 0),
+  } : undefined);
+  const interval = useSessionForm(intervalForm, monitor?.desired?.interval_min ? String(monitor.desired.interval_min) : undefined);
+  const { since, limit, language } = tx.value;
+  const { llm, obsidian, digestOn, flash } = ft.value;
+  const custom = interval.value;
   const [note, setNote] = useState("");
-  const focus = useRef<string>("");
-
-  useEffect(() => {
-    if (!file || focus.current.startsWith("tx")) return;
-    setSince(file.since || "");
-    setLimit(String(file.max_per_run ?? ""));
-    setLanguage(file.language || "");
-  }, [file]);
-
-  useEffect(() => {
-    if (!features || focus.current.startsWith("ft")) return;
-    setLlm(Boolean(features.llm_enabled));
-    setObsidian(Boolean(features.obsidian_enabled));
-    setDigestOn(Boolean(features.digest_enabled));
-    setFlash(String(features.flash_max_s ?? 0));
-  }, [features]);
-
-  useEffect(() => {
-    if (focus.current === "interval") return;
-    const minutes = monitor?.desired?.interval_min;
-    if (minutes) setCustom(String(minutes));
-  }, [monitor?.desired?.interval_min]);
 
   const on = monitor?.state !== "off";
   const presets = monitor?.presets?.length ? monitor.presets : PRESETS;
@@ -70,20 +59,36 @@ export function Settings() {
 
   const saveTx = (event: FormEvent) => {
     event.preventDefault();
+    if (tx.pending || state.busy) return;
     const maxPerRun = Number(limit);
-    if (!Number.isInteger(maxPerRun) || maxPerRun < 1) return;
-    void inbox.saveSettings({ since: since.trim(), max_per_run: maxPerRun, language });
+    if (!Number.isInteger(maxPerRun) || maxPerRun < 1 || maxPerRun > 10000) {
+      tx.showError("每轮条数要是 1 到 10000 之间的整数。");
+      return;
+    }
+    void tx.submit((draft) => inbox.saveSettings({ since: draft.since.trim(), max_per_run: Number(draft.limit), language: draft.language }), {
+      success: "转写设置已保存，后台任务下一轮生效。",
+      failure: "转写设置没有保存，请重试。输入已保留。",
+      savedValue: (draft) => ({ ...draft, since: draft.since.trim(), limit: String(Number(draft.limit)) }),
+    });
   };
 
   const saveFt = (event: FormEvent) => {
     event.preventDefault();
+    if (ft.pending || state.busy) return;
     const seconds = Number(flash);
-    if (!Number.isInteger(seconds) || seconds < 0) return;
-    void inbox.saveFeatures({
-      llm_enabled: llm,
-      obsidian_enabled: obsidian,
-      digest_enabled: digestOn,
-      flash_max_s: seconds,
+    if (!Number.isInteger(seconds) || seconds < 0 || seconds > 3600) {
+      ft.showError("闪念阈值要是 0 到 3600 之间的整数秒。");
+      return;
+    }
+    void ft.submit((draft) => inbox.saveFeatures({
+      llm_enabled: draft.llm,
+      obsidian_enabled: draft.obsidian,
+      digest_enabled: draft.digestOn,
+      flash_max_s: Number(draft.flash),
+    }), {
+      success: "整理与导出设置已保存，后台任务下一轮生效。",
+      failure: "整理与导出设置没有保存，请重试。输入已保留。",
+      savedValue: (draft) => ({ ...draft, flash: String(Number(draft.flash)) }),
     });
   };
 
@@ -147,6 +152,7 @@ export function Settings() {
                 key={minutes}
                 type="button"
                 className={current === minutes ? "is-on" : ""}
+                aria-pressed={current === minutes}
                 disabled={state.busy}
                 onClick={() => commitMonitor("interval", () => inbox.saveMonitor({ interval_min: minutes }), String(minutes))}
               >
@@ -162,13 +168,7 @@ export function Settings() {
               step={1}
               aria-label="自定义分钟数"
               value={custom}
-              onFocus={() => {
-                focus.current = "interval";
-              }}
-              onBlur={() => {
-                focus.current = "";
-              }}
-              onChange={(event) => setCustom(event.target.value)}
+              onChange={(event) => interval.setValue(event.target.value)}
             />
             <span>分钟</span>
             <button
@@ -182,6 +182,7 @@ export function Settings() {
                   return;
                 }
                 setNote("");
+                interval.setValue(String(value));
                 commitMonitor("interval", () => inbox.saveMonitor({ interval_min: value }), String(value));
               }}
             >
@@ -189,6 +190,7 @@ export function Settings() {
             </button>
           </div>
           <small>最少 1 分钟。间隔越短越及时，但每次检查都会扫一遍语音备忘录目录（没有新录音时不会加载模型）。</small>
+          {interval.dirty ? <p className="unsaved">自定义间隔尚未应用</p> : null}
           {note ? <p className="help">{note}</p> : null}
         </div>
         <div className="field">
@@ -221,8 +223,8 @@ export function Settings() {
         </button>
       </section>
       <div className="two">
-        <form className="panel" onSubmit={saveTx}>
-          <h2>转写</h2>
+        <form className="panel" onSubmit={saveTx} aria-busy={tx.pending}>
+          <div className="panel-head"><h2>转写</h2>{tx.dirty ? <span className="unsaved">有未保存的修改</span> : null}</div>
           <label className="field">
             <span>起始日期</span>
             <input
@@ -230,13 +232,7 @@ export function Settings() {
               inputMode="numeric"
               placeholder="2026-10-01"
               autoComplete="off"
-              onFocus={() => {
-                focus.current = "tx-since";
-              }}
-              onBlur={() => {
-                focus.current = "";
-              }}
-              onChange={(event) => setSince(event.target.value)}
+              onChange={(event) => tx.setValue({ ...tx.value, since: event.target.value })}
             />
             <small>只处理这一天和之后的语音备忘录。留空表示不限。手动导入的音频不受限制。</small>
           </label>
@@ -248,13 +244,7 @@ export function Settings() {
               max={10000}
               step={1}
               value={limit}
-              onFocus={() => {
-                focus.current = "tx-limit";
-              }}
-              onBlur={() => {
-                focus.current = "";
-              }}
-              onChange={(event) => setLimit(event.target.value)}
+              onChange={(event) => tx.setValue({ ...tx.value, limit: event.target.value })}
             />
             <small>一轮最多新转写几条，避免一次处理太多。</small>
           </label>
@@ -262,13 +252,7 @@ export function Settings() {
             <span>识别语言</span>
             <select
               value={language}
-              onFocus={() => {
-                focus.current = "tx-lang";
-              }}
-              onBlur={() => {
-                focus.current = "";
-              }}
-              onChange={(event) => setLanguage(event.target.value)}
+              onChange={(event) => tx.setValue({ ...tx.value, language: event.target.value })}
             >
               {languageChoices.map(([code, label]) => (
                 <option key={code || "auto"} value={code}>
@@ -279,23 +263,18 @@ export function Settings() {
           </label>
           {state.envOverrides.length ? <p className="help">这次打开时，起始日期或语言被启动参数临时盖过了。保存仍然有效，后台任务会用保存后的值。</p> : null}
           <p className="help">保存后，后台任务下一轮生效。</p>
-          <button type="submit" className="primary" disabled={state.busy}>
-            保存
+          <button type="submit" className="primary" disabled={state.busy || tx.pending}>
+            {tx.pending ? "正在保存…" : "保存"}
           </button>
+          <p className="form-status" role="status" aria-live="polite" data-tone={tx.feedback?.tone}>{tx.feedback?.message}</p>
         </form>
-        <form className="panel" onSubmit={saveFt}>
-          <h2>整理与导出</h2>
+        <form className="panel" onSubmit={saveFt} aria-busy={ft.pending}>
+          <div className="panel-head"><h2>整理与导出</h2>{ft.dirty ? <span className="unsaved">有未保存的修改</span> : null}</div>
           <label className="check">
             <input
               type="checkbox"
               checked={llm}
-              onFocus={() => {
-                focus.current = "ft-llm";
-              }}
-              onBlur={() => {
-                focus.current = "";
-              }}
-              onChange={(event) => setLlm(event.target.checked)}
+              onChange={(event) => ft.setValue({ ...ft.value, llm: event.target.checked })}
             />
             <span>转写后用本机模型分类和总结</span>
           </label>
@@ -304,7 +283,7 @@ export function Settings() {
             <input
               type="checkbox"
               checked={obsidian}
-              onChange={(event) => setObsidian(event.target.checked)}
+              onChange={(event) => ft.setValue({ ...ft.value, obsidian: event.target.checked })}
             />
             <span>写入 Obsidian</span>
           </label>
@@ -314,7 +293,7 @@ export function Settings() {
           </p>
           <p className="help">只改程序维护的那一段，你在笔记里写的其他内容会保留。当日摘要在每天 {state.featureMeta.digest_time || "22:30"} 之后生成。</p>
           <label className="check">
-            <input type="checkbox" checked={digestOn} onChange={(event) => setDigestOn(event.target.checked)} />
+            <input type="checkbox" checked={digestOn} onChange={(event) => ft.setValue({ ...ft.value, digestOn: event.target.checked })} />
             <span>每天晚上生成当日摘要</span>
           </label>
           <label className="field">
@@ -325,19 +304,14 @@ export function Settings() {
               max={3600}
               step={1}
               value={flash}
-              onFocus={() => {
-                focus.current = "ft-flash";
-              }}
-              onBlur={() => {
-                focus.current = "";
-              }}
-              onChange={(event) => setFlash(event.target.value)}
+              onChange={(event) => ft.setValue({ ...ft.value, flash: event.target.value })}
             />
             <small>不超过这个时长的录音算闪念：只润色成一小段，追加到当天的每日笔记。更长的录音做完整总结。</small>
           </label>
-          <button type="submit" className="primary" disabled={state.busy}>
-            保存
+          <button type="submit" className="primary" disabled={state.busy || ft.pending}>
+            {ft.pending ? "正在保存…" : "保存"}
           </button>
+          <p className="form-status" role="status" aria-live="polite" data-tone={ft.feedback?.tone}>{ft.feedback?.message}</p>
         </form>
       </div>
       <section className="panel" aria-label="系统状态">

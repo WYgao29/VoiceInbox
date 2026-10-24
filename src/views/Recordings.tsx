@@ -14,12 +14,18 @@ function TodoList({ items, id, rules, query }: { items: Todo[]; id: string; rule
   if (!items.length) return <p className="empty">没有待办。</p>;
   return (
     <ul className="todo-list">
-      {items.map((todo) => (
-        <li key={todo.key} className={todo.done ? "is-done" : ""}>
+      {items.map((todo) => {
+        const operation = `${id}:${todo.key}`;
+        const pending = inbox.state.todoPending?.[operation];
+        const error = inbox.state.todoErrors?.[operation];
+        return (
+        <li key={todo.key} className={(pending ?? todo.done) ? "is-done" : ""} aria-busy={pending !== undefined}>
           <label>
             <input
               type="checkbox"
-              checked={Boolean(todo.done)}
+              checked={pending ?? Boolean(todo.done)}
+              aria-disabled={pending !== undefined}
+              onClick={(event) => { if (pending !== undefined) event.preventDefault(); }}
               onChange={(event) => {
                 void inbox.toggleTodo(id, todo.key, event.target.checked);
               }}
@@ -27,9 +33,11 @@ function TodoList({ items, id, rules, query }: { items: Todo[]; id: string; rule
             <span>
               <RichText text={todo.text} query={query} rules={rules} />
             </span>
+            {pending !== undefined ? <small className="todo-saving" role="status">保存中…</small> : null}
           </label>
+          {error ? <p className="inline-status" data-tone="error" role="alert">{error}</p> : null}
         </li>
-      ))}
+      );})}
     </ul>
   );
 }
@@ -54,6 +62,7 @@ function Card({ item }: { item: Recording }) {
       type="button"
       className={active ? "rec-card is-on" : "rec-card"}
       data-id={item.id}
+      aria-pressed={active}
       onClick={() => void inbox.select(item.id, { seek: item.hit_at ?? null })}
     >
       <span className="rec-top">
@@ -87,40 +96,74 @@ function PlayGlyph({ paused }: { paused: boolean }) {
   );
 }
 
-function Player({ id }: { id: string }) {
+function Player({ id, durationSeconds = 0 }: { id: string; durationSeconds?: number | null }) {
   const inbox = useInbox();
   const [playing, setPlaying] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const [time, setTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState(durationSeconds || 0);
+  const [canSeek, setCanSeek] = useState(false);
+  const pendingSeek = useRef<number | null>(null);
+  const showError = (audio: HTMLAudioElement) => {
+    setLoading(false);
+    setPlaying(false);
+    pendingSeek.current = null;
+    setError(audio.error?.code === 4 ? "音频格式不受支持，或文件无法读取。" : "音频未能播放，请重新加载后再试。");
+  };
+  const play = async (audio: HTMLAudioElement) => {
+    setError("");
+    setLoading(true);
+    applyPlaybackRate(audio, inbox.state.rate);
+    try {
+      await audio.play();
+      setLoading(false);
+    } catch (cause) {
+      setLoading(false);
+      if (!(cause instanceof Error) || cause.name !== "AbortError") showError(audio);
+    }
+  };
   return (
-    <div className="player-bar">
+    <div className="player-bar" role="group" aria-label="音频播放器" aria-busy={loading}>
       <audio
         key={id}
         ref={inbox.audioRef}
-        preload="none"
+        preload="metadata"
         tabIndex={-1}
         aria-hidden="true"
         src={`/api/recordings/${id}/audio`}
         onLoadedMetadata={(event) => {
-          setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
-          applyPlaybackRate(event.currentTarget, inbox.state.rate);
+          const audio = event.currentTarget;
+          setDuration(Number.isFinite(audio.duration) ? audio.duration : durationSeconds || 0);
+          setCanSeek(true);
+          applyPlaybackRate(audio, inbox.state.rate);
+          if (pendingSeek.current !== null) {
+            audio.currentTime = pendingSeek.current;
+            pendingSeek.current = null;
+            void play(audio);
+          }
         }}
         onTimeUpdate={(event) => setTime(event.currentTarget.currentTime || 0)}
         onPlay={(event) => {
           setPlaying(true);
           applyPlaybackRate(event.currentTarget, inbox.state.rate);
         }}
-        onPause={() => setPlaying(false)}
-        onEnded={() => setPlaying(false)}
+        onPlaying={() => setLoading(false)}
+        onWaiting={() => setLoading(true)}
+        onCanPlay={() => setLoading(false)}
+        onPause={() => { setPlaying(false); setLoading(false); }}
+        onEnded={() => { setPlaying(false); setLoading(false); }}
+        onError={(event) => { setCanSeek(false); showError(event.currentTarget); }}
       />
       <button
         type="button"
         className="player-toggle"
-        aria-label={playing ? "暂停" : "播放"}
+        aria-label={playing ? "暂停" : loading ? "正在加载音频" : "播放"}
+        disabled={loading && !playing}
         onClick={() => {
           const audio = inbox.audioRef.current;
           if (!audio) return;
-          if (audio.paused) void audio.play().catch(() => undefined);
+          if (audio.paused) void play(audio);
           else audio.pause();
         }}
       >
@@ -135,37 +178,37 @@ function Player({ id }: { id: string }) {
         step={0.1}
         value={duration ? Math.min(time, duration) : 0}
         aria-label="播放进度"
+        aria-valuetext={`${clock(time)}，共 ${clock(duration)}`}
+        disabled={!canSeek}
         onChange={(event) => {
           const next = Number(event.target.value);
           const audio = inbox.audioRef.current;
-          if (audio) audio.currentTime = next;
+          if (audio && canSeek) audio.currentTime = next;
           setTime(next);
         }}
       />
       <span className="player-time">{clock(duration)}</span>
       <select aria-label="倍速" value={String(inbox.state.rate)} onChange={(event) => inbox.setRate(Number(event.target.value))}>
         {["0.75", "1", "1.25", "1.5", "2"].map((rate) => (
-          <option key={rate} value={rate}>
-            {rate}×
-          </option>
+          <option key={rate} value={rate}>{rate}×</option>
         ))}
       </select>
       {typeof inbox.state.seek === "number" ? (
         <button
           type="button"
           className="secondary"
+          disabled={loading}
           onClick={() => {
             const audio = inbox.audioRef.current;
             if (!audio || inbox.state.seek == null) return;
             const target = inbox.state.seek;
-            const go = () => {
+            if (audio.readyState >= 1) {
               audio.currentTime = target;
-              void audio.play().catch(() => undefined);
-            };
-            if (audio.readyState >= 1) go();
-            else {
-              audio.preload = "metadata";
-              audio.addEventListener("loadedmetadata", go, { once: true });
+              void play(audio);
+            } else {
+              pendingSeek.current = target;
+              setError("");
+              setLoading(true);
               audio.load();
             }
           }}
@@ -173,6 +216,17 @@ function Player({ id }: { id: string }) {
           跳到命中处 ≈ {clock(inbox.state.seek)}
         </button>
       ) : null}
+      {error ? (
+        <div className="player-status" data-tone="error" role="alert">
+          <span>{error}</span>
+          <button type="button" className="text-button" onClick={() => {
+            const audio = inbox.audioRef.current;
+            if (!audio) return;
+            audio.load();
+            void play(audio);
+          }}>重新加载音频</button>
+        </div>
+      ) : loading ? <p className="player-status" role="status">正在加载音频…</p> : null}
     </div>
   );
 }
@@ -236,7 +290,7 @@ export function Recordings() {
                 ["flash", "闪念"],
               ] as const
             ).map(([kind, label]) => (
-              <button key={label} type="button" className={state.kind === kind ? "is-on" : ""} onClick={() => inbox.setKind(kind)}>
+              <button key={label} type="button" aria-pressed={state.kind === kind} className={state.kind === kind ? "is-on" : ""} onClick={() => inbox.setKind(kind)}>
                 {label}
               </button>
             ))}
@@ -255,7 +309,7 @@ export function Recordings() {
           {state.kind !== "flash" && state.facets.scenes?.length ? (
             <div className="chips" aria-label="场景">
               {state.facets.scenes.map((scene) => (
-                <button key={scene.name} type="button" className={state.scene === scene.name ? "chip is-on" : "chip"} onClick={() => inbox.setScene(scene.name)}>
+                <button key={scene.name} type="button" aria-pressed={state.scene === scene.name} className={state.scene === scene.name ? "chip is-on" : "chip"} onClick={() => inbox.setScene(scene.name)}>
                   {scene.name}
                   <span>{scene.count}</span>
                 </button>
@@ -265,7 +319,7 @@ export function Recordings() {
           {state.facets.tags?.length ? (
             <div className="chips" aria-label="标签">
               {state.facets.tags.map((tag) => (
-                <button key={tag.name} type="button" className={state.tag === tag.name ? "chip is-on" : "chip"} onClick={() => inbox.setTag(tag.name)}>
+                <button key={tag.name} type="button" aria-pressed={state.tag === tag.name} className={state.tag === tag.name ? "chip is-on" : "chip"} onClick={() => inbox.setTag(tag.name)}>
                   #{tag.name}
                   <span>{tag.count}</span>
                 </button>
@@ -274,7 +328,7 @@ export function Recordings() {
           ) : null}
           <div className="chips" role="group" aria-label="状态">
             {STATUS_FILTERS.map(([status, label]) => (
-              <button key={status} type="button" className={state.status === status ? "chip is-on" : "chip"} onClick={() => inbox.setStatus(status)}>
+              <button key={status} type="button" aria-pressed={state.status === status} className={state.status === status ? "chip is-on" : "chip"} onClick={() => inbox.setStatus(status)}>
                 {label}
                 <span>{state.counts[status] ?? ""}</span>
               </button>
@@ -320,6 +374,9 @@ function Detail() {
   const [right, setRight] = useState("");
   const [template, setTemplate] = useState("auto");
   const [toolsMenu, setToolsMenu] = useState<"" | "summary" | "text">("");
+  const [copyStatus, setCopyStatus] = useState("");
+  const [correctionSaving, setCorrectionSaving] = useState(false);
+  const correctionPending = useRef(false);
   const summaryMenu = useRef<HTMLDivElement | null>(null);
   const textMenu = useRef<HTMLDivElement | null>(null);
   const closeTools = useCallback(() => setToolsMenu(""), []);
@@ -328,10 +385,19 @@ function Detail() {
   useEffect(() => {
     setToolsMenu("");
   }, [inbox.state.tab, item?.id]);
+  useEffect(() => {
+    setCopyStatus("");
+  }, [item?.id, item?.text, item?.raw_text, inbox.state.showRaw]);
   if (!item || item.id !== inbox.state.selectedId) {
     return (
-      <section className="detail" aria-label="录音详情">
-        <p className="empty big">选一条录音，看纪要、待办和原文。</p>
+      <section className="detail" aria-label="录音详情" aria-busy={inbox.state.detailLoading}>
+        {inbox.state.detailError ? (
+          <div className="load-state" role="alert">
+            <h2>录音未能读取</h2>
+            <p>{inbox.state.detailError}</p>
+            <button type="button" className="secondary" onClick={() => void inbox.select(inbox.state.selectedId)}>重试读取</button>
+          </div>
+        ) : <p className="empty big" role="status">{inbox.state.detailLoading ? "正在读取录音…" : "选一条录音，看纪要、待办和原文。"}</p>}
       </section>
     );
   }
@@ -356,18 +422,21 @@ function Detail() {
   const shownText = inbox.state.showRaw ? item.raw_text || "" : item.text || "";
   const rules = inbox.state.showRaw ? [] : inbox.state.rules;
   const templates = inbox.state.featureMeta.templates || [];
+  const summaryAction = analysis?.route === "flash" ? (analysis.llm ? "重新润色" : "润色") : analysis?.llm ? "重新生成总结" : "生成总结";
+  const changeTab = (index: number) => {
+    const tab = tabs[(index + tabs.length) % tabs.length];
+    if (!tab) return;
+    inbox.setTab(tab);
+    document.getElementById(`detail-tab-${tab}`)?.focus();
+  };
   const copyText = async () => {
     const text = shownText.trim();
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
+      setCopyStatus("全文已复制");
     } catch {
-      const area = document.createElement("textarea");
-      area.value = text;
-      document.body.appendChild(area);
-      area.select();
-      document.execCommand("copy");
-      area.remove();
+      setCopyStatus("未能复制全文，请重试或导出文本。");
     }
   };
   const download = (filename: string, text: string, type: string) => {
@@ -394,7 +463,7 @@ function Detail() {
             </span>
           ) : null}
         </div>
-        <button type="button" className="danger" disabled={inbox.state.busy} onClick={() => void inbox.deleteRecordings([item.id])}>删除录音</button>
+        <button type="button" className="text-button danger" disabled={inbox.state.busy} onClick={() => void inbox.deleteRecordings([item.id])}>删除录音</button>
         </div>
         <h2>{recordingTitle(item)}</h2>
         <p className="meta">
@@ -402,14 +471,20 @@ function Detail() {
             .filter(Boolean)
             .join(" · ")}
         </p>
-        {item.has_audio ? <Player id={item.id} /> : (
+        {item.has_audio ? <Player key={item.id} id={item.id} durationSeconds={item.duration_s} /> : (
           <p className="help">{item.audio_note || "找不到可以播放的音频。"}</p>
         )}
         {tabs.length ? (
           <div className="action-row tool-row">
-            <div className="dtabs" role="tablist">
+            <div className="dtabs" role="tablist" aria-label="录音内容">
               {tabs.map((tab) => (
-                <button key={tab} type="button" className={inbox.state.tab === tab ? "is-on" : ""} onClick={() => inbox.setTab(tab)}>
+                <button key={tab} type="button" role="tab" id={`detail-tab-${tab}`} aria-selected={inbox.state.tab === tab} aria-controls={`detail-panel-${tab}`} tabIndex={inbox.state.tab === tab ? 0 : -1} className={inbox.state.tab === tab ? "is-on" : ""} onClick={() => inbox.setTab(tab)} onKeyDown={(event) => {
+                  const index = tabs.indexOf(tab);
+                  if (event.key === "ArrowRight") { event.preventDefault(); changeTab(index + 1); }
+                  else if (event.key === "ArrowLeft") { event.preventDefault(); changeTab(index - 1); }
+                  else if (event.key === "Home") { event.preventDefault(); changeTab(0); }
+                  else if (event.key === "End") { event.preventDefault(); changeTab(tabs.length - 1); }
+                }}>
                   {tab === "summary" ? summaryTabLabel(analysis) : tab === "todos" ? "待办" : tab === "mind" ? "导图" : "原文"}
                   {tab === "todos" ? <span className="count">{(analysis?.todos || []).filter((todo) => !todo.done).length || "✓"}</span> : null}
                 </button>
@@ -432,23 +507,22 @@ function Detail() {
                 </select>
               ) : null}
               {analysis ? (
-                <button type="button" className="secondary" disabled={inbox.state.busy} onClick={() => void inbox.summarize(item.id, analysis.route === "flash" ? "auto" : template)}>
-                  {analysis.route === "flash" ? (analysis.llm ? "重新润色" : "润色") : analysis.llm ? "重新生成总结" : "生成总结"}
+                <button type="button" className="secondary" data-collapse disabled={inbox.state.busy} onClick={() => void inbox.summarize(item.id, analysis.route === "flash" ? "auto" : template)}>
+                  {summaryAction}
                 </button>
               ) : null}
-              {analysis?.obsidian_uri || (analysis && analysis.route !== "flash") ? (
+              {analysis ? (
                 <div className="menu overflow-menu" ref={summaryMenu}>
                   <button
                     type="button"
                     className="secondary"
-                    aria-haspopup="menu"
                     aria-expanded={toolsMenu === "summary"}
                     onClick={() => setToolsMenu((open) => (open === "summary" ? "" : "summary"))}
                   >
                     更多
                   </button>
                   {toolsMenu === "summary" ? (
-                    <div className="menu-pop" role="menu">
+                    <div className="menu-pop" role="group" aria-label="录音操作">
                       {analysis.obsidian_uri ? (
                         <button type="button" onClick={() => openObsidian(analysis.obsidian_uri || "")}>
                           在 Obsidian 打开
@@ -464,6 +538,10 @@ function Detail() {
                           ))}
                         </select>
                       ) : null}
+                      <button type="button" disabled={inbox.state.busy} onClick={() => {
+                        setToolsMenu("");
+                        void inbox.summarize(item.id, analysis.route === "flash" ? "auto" : template);
+                      }}>{summaryAction}</button>
                     </div>
                   ) : null}
                 </div>
@@ -472,6 +550,8 @@ function Detail() {
           </div>
         ) : null}
       </div>
+      {inbox.state.detailError ? <div className="inline-status" data-tone="error" role="alert"><p>录音更新失败：{inbox.state.detailError}</p><button type="button" className="text-button" onClick={() => void inbox.select(item.id, { keep: true })}>重试更新</button></div> : null}
+      <div role={tabs.length ? "tabpanel" : undefined} id={`detail-panel-${inbox.state.tab}`} aria-labelledby={tabs.length ? `detail-tab-${inbox.state.tab}` : undefined} tabIndex={tabs.length ? 0 : undefined}>
       {item.reason ? (
         <div className="reason-box">
           <p>{item.reason}</p>
@@ -580,10 +660,10 @@ function Detail() {
           <div className="text-head tool-row">
             {item.corrected_differs ? (
               <div className="seg">
-                <button type="button" className={!inbox.state.showRaw ? "is-on" : ""} onClick={() => inbox.setShowRaw(false)}>
+                <button type="button" aria-pressed={!inbox.state.showRaw} className={!inbox.state.showRaw ? "is-on" : ""} onClick={() => inbox.setShowRaw(false)}>
                   纠错后
                 </button>
-                <button type="button" className={inbox.state.showRaw ? "is-on" : ""} onClick={() => inbox.setShowRaw(true)}>
+                <button type="button" aria-pressed={inbox.state.showRaw} className={inbox.state.showRaw ? "is-on" : ""} onClick={() => inbox.setShowRaw(true)}>
                   原始转写
                 </button>
               </div>
@@ -620,14 +700,13 @@ function Detail() {
                 <button
                   type="button"
                   className="secondary"
-                  aria-haspopup="menu"
                   aria-expanded={toolsMenu === "text"}
                   onClick={() => setToolsMenu((open) => (open === "text" ? "" : "text"))}
                 >
                   更多
                 </button>
                 {toolsMenu === "text" ? (
-                  <div className="menu-pop" role="menu">
+                  <div className="menu-pop" role="group" aria-label="导出转写">
                     <button type="button" onClick={() => download(`${fileStem(recordingTitle(item))}.txt`, shownText, "text/plain;charset=utf-8")}>
                       导出 txt
                     </button>
@@ -653,6 +732,7 @@ function Detail() {
               </div>
             </div>
           </div>
+          {copyStatus ? <p className="inline-status" role="status">{copyStatus}</p> : null}
           {!inbox.state.showRaw && item.corrected_differs ? <p className="help">带下划线的是按纠错表替换过的词，鼠标停上去能看到原来的写法。</p> : null}
           <div className="reading">{item.has_text ? <RichText text={shownText} query={inbox.state.query} rules={rules} /> : "还没有转写文本。"}</div>
           {item.has_text ? (
@@ -663,10 +743,16 @@ function Detail() {
                 className="fix-row"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void inbox.addRule(wrong, right, item.id).then((saved) => {
+                  if (correctionPending.current || !wrong.trim() || !right.trim()) return;
+                  correctionPending.current = true;
+                  setCorrectionSaving(true);
+                  void inbox.addRule(wrong.trim(), right.trim(), item.id).then((saved) => {
                     if (!saved) return;
                     setWrong("");
                     setRight("");
+                  }).finally(() => {
+                    correctionPending.current = false;
+                    setCorrectionSaving(false);
                   });
                 }}
               >
@@ -678,8 +764,8 @@ function Detail() {
                   应该是
                   <input value={right} maxLength={80} onChange={(event) => setRight(event.target.value)} />
                 </label>
-                <button type="submit" className="primary" disabled={inbox.state.busy}>
-                  加入并更新这条
+                <button type="submit" className="primary" disabled={inbox.state.busy || correctionSaving}>
+                  {correctionSaving ? "更新中…" : "加入并更新这条"}
                 </button>
               </form>
             </details>
@@ -711,6 +797,7 @@ function Detail() {
           ) : null}
         </div>
       ) : null}
+      </div>
     </section>
   );
 }

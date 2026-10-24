@@ -170,11 +170,11 @@ export function moveIndex(current: number, delta: number, length: number): numbe
 export function interpretKey(
   key: string,
   mods: { meta: boolean; ctrl: boolean; alt: boolean },
-  ctx: { typing: boolean; helpOpen: boolean; view: string; hasDetail: boolean; canPlay: boolean; visibleTabs: readonly string[] },
+  ctx: { typing: boolean; helpOpen: boolean; modalOpen?: boolean; interactive?: boolean; view: string; hasDetail: boolean; canPlay: boolean; visibleTabs: readonly string[] },
 ): KeyAction | null {
-  if (mods.meta || mods.ctrl || mods.alt) return null;
+  if (mods.meta || mods.ctrl || mods.alt || ctx.modalOpen || ctx.helpOpen) return null;
   if (key === "Escape") return { type: "escape" };
-  if (ctx.typing || ctx.helpOpen) return null;
+  if (ctx.typing || (ctx.interactive && key === " ")) return null;
   if (key === "/") return { type: "search" };
   if ((key === "j" || key === "k") && ctx.view === "recordings") return { type: "move", delta: key === "j" ? 1 : -1 };
   if ((key === "1" || key === "2" || key === "3" || key === "4") && ctx.view === "recordings" && ctx.hasDetail) {

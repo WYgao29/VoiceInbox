@@ -7,6 +7,9 @@ export function PanelScrim({ onClose }: { onClose: () => void }) {
     <button
       type="button"
       className="panel-scrim"
+      data-modal-backdrop=""
+      tabIndex={-1}
+      aria-hidden="true"
       aria-label="关闭信息栏"
       onMouseDown={(event: MouseEvent<HTMLButtonElement>) => event.preventDefault()}
       onClick={onClose}
